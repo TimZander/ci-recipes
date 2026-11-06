@@ -1,0 +1,95 @@
+name: Cloudflare Pages preview
+description: >-
+  Deploy a built directory as a Cloudflare Pages preview under pr-<number> and post (or
+  update) the pull request's one preview comment. Run it right after your build, in a job
+  that does not wait for the tests (STANDARD.md, "Preview before tests").
+
+inputs:
+  project-name:
+    description: The Cloudflare Pages project.
+    required: true
+  directory:
+    description: The built output to deploy, relative to working-directory.
+    required: true
+  working-directory:
+    description: >-
+      Where wrangler runs. Keep it the directory that holds a Pages `functions/` folder, if
+      the project has one: wrangler picks functions up from its working directory.
+    default: .
+  wrangler-version:
+    description: An exact wrangler version (for example 4.142.0), never a range.
+    required: true
+  api-token:
+    description: secrets.CLOUDFLARE_API_TOKEN (Pages - Edit).
+    required: true
+  account-id:
+    description: secrets.CLOUDFLARE_ACCOUNT_ID.
+    required: true
+  github-token:
+    description: A token that may write pull request comments.
+    default: ${{ github.token }}
+  note:
+    description: An optional line for the comment, such as "public maps only".
+    default: ''
+
+outputs:
+  deployment-url:
+    description: This commit's preview URL.
+    value: ${{ steps.deploy.outputs.deployment-url }}
+  alias-url:
+    description: The pr-<number> alias, stable across pushes.
+    value: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+  skipped:
+    description: '"true" when the run was a fork pull request and nothing was deployed.'
+    value: ${{ steps.guard.outputs.skipped }}
+
+runs:
+  using: composite
+  steps:
+    # A fork's pull request has no secrets and a read-only token; say so rather than fail.
+    # Anything that is not a pull request is a caller mistake: a preview must never be
+    # deployed from a push, where a branch named main would be production.
+    - id: guard
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        case "$EVENT" in pull_request|pull_request_target) ;; *)
+          echo "::error::pages-preview runs on pull_request only (got $EVENT)"; exit 1 ;;
+        esac
+        [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "::error::no pull request number"; exit 1; }
+        if [ "$HEAD_REPO" != "$REPO" ]; then
+          echo "::notice::Fork pull request: no preview (forks get no secrets)."
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # pr-<number>, never the head branch: Cloudflare keeps 28 characters of a branch in the
+    # alias, so long branch names collide, and a head branch named main would deploy to
+    # production. LOAD-BEARING: actions/pages-teardown matches this exact value.
+    - id: deploy
+      if: steps.guard.outputs.skipped == 'false'
+      uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+      with:
+        apiToken: ${{ inputs.api-token }}
+        accountId: ${{ inputs.account-id }}
+        workingDirectory: ${{ inputs.working-directory }}
+        wranglerVersion: ${{ inputs.wrangler-version }}
+        packageManager: npm
+        command: pages deploy ${{ inputs.directory }} --project-name=${{ inputs.project-name }} --branch=pr-${{ github.event.pull_request.number }}
+
+    - if: steps.guard.outputs.skipped == 'false'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        ALIAS_URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+        NOTE: ${{ inputs.note }}
+      run: node "$GITHUB_ACTION_PATH/comment.mjs"

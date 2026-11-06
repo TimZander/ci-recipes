@@ -1,0 +1,27 @@
+name: Test
+
+# Public repository: Actions minutes are free here, but keep it one short job anyway.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      # The runner's own node and python: the scripts use their standard libraries only,
+      # which is also what the actions run on in a caller's job.
+      - run: node --test 'tests/*.test.mjs'
+      - run: python3 -m unittest discover -s tests -v
