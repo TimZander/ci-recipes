@@ -8,7 +8,13 @@ name: Preview
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    # Narrow with paths: when only part of the repository is the site.
+    # A pull request that changes only these runs no preview: none of them is built into the
+    # site (STANDARD.md rule 6, decision 0007). Remove docs/ if docs/ is the site, and add
+    # paths the build never reads. Never add a paths: key beside this one.
+    paths-ignore:
+      - 'openspec/**'
+      - 'docs/**'
+      - '*.md'
 
 jobs:
   preview:

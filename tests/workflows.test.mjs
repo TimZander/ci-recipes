@@ -234,3 +234,31 @@ test("positive control: each way of hiding a refused comment write is reported",
   assert.match("    - continue-on-error: true", QUIET);
   assert.match("      continue-on-error: true", QUIET);
 });
+
+const CODE_FREE = ["- 'openspec/**'", "- 'docs/**'", "- '*.md'"];
+test("the preview template skips a pull request that changes no code", () => {
+  const rules = CODE_FREE.map((l) => [l, l, ["on", "pull_request", "paths-ignore"]]);
+  assert.deepEqual(broken(read(TEMPLATES[0]), rules), []);
+  // positive control: the same entries under another key are reported
+  const moved = "on:\n  pull_request:\n    paths:\n" + CODE_FREE.map((l) => `      ${l}`).join("\n") + "\n";
+  assert.equal(broken(moved, rules).length, CODE_FREE.length);
+});
+
+/** The filter keys a trigger carries; GitHub refuses a workflow that sets both on one event. */
+const filterKeys = (text, event) =>
+  keyPaths(text).filter((l) => l.path.join(" > ") === `on > ${event}` && /^paths(-ignore)?:/.test(l.line))
+    .map((l) => l.line.split(":")[0]);
+test("the preview template's trigger never sets paths beside paths-ignore", () => {
+  assert.deepEqual(filterKeys(read(TEMPLATES[0]), "pull_request"), ["paths-ignore"]);
+  // positive control
+  const both = read(TEMPLATES[0]).replace("    paths-ignore:", "    paths:\n      - 'src/**'\n    paths-ignore:");
+  assert.deepEqual(filterKeys(both, "pull_request"), ["paths", "paths-ignore"]);
+});
+
+test("the teardown template has no path filter: a close always tears down", () => {
+  const FILTER = /\bpaths(-ignore)?\s*:/;
+  assert.doesNotMatch(read(TEMPLATES[1]), FILTER);
+  // positive controls: a block key and the flow form
+  assert.match("    paths-ignore:", FILTER);
+  assert.match("  pull_request: {types: [closed], paths-ignore: ['docs/**']}", FILTER);
+});
