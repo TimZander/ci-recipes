@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { selectTargets, isDeploymentId, REMOVED_BODY } from "../actions/pages-teardown/teardown.mjs";
 import { MARKER } from "../actions/pages-preview/comment.mjs";
+import { previewAlias } from "../actions/pages-branch-preview/alias.mjs";
 
 let n = 0;
 function dep(branch, environment = "preview") {
@@ -67,4 +68,29 @@ test("bad modes and PR numbers are refused", () => {
 
 test("the removed comment keeps the marker, so a reopened PR's next preview updates it", () => {
   assert.ok(REMOVED_BODY.startsWith(MARKER + "\n"));
+});
+
+test("branch mode deletes exactly the deleted preview branch's pv- previews", () => {
+  const mine = previewAlias("preview/7-proto"), other = previewAlias("preview/8-proto");
+  const deployments = [dep(mine), dep(mine), dep(other), dep("pr-7"), dep("main", "production")];
+  const t = selectTargets({ deployments, mode: "branch", branch: "preview/7-proto", productionBranch: "main" });
+  assert.deepEqual(ids(t), [mine, mine]);
+});
+
+test("branch mode refuses a branch that is not a preview branch", () => {
+  const base = { deployments: [dep("pr-1")], productionBranch: "main", mode: "branch" };
+  for (const branch of [undefined, "", "main", "branches/4-x", "preview/"]) {
+    assert.throws(() => selectTargets({ ...base, branch }), String(branch));
+  }
+});
+
+test("sweep keeps the previews of preview branches that still exist, and only those", () => {
+  const live = previewAlias("preview/live"), gone = previewAlias("preview/gone");
+  const deployments = [dep(live), dep(gone), dep("pr-3")];
+  const t = selectTargets({
+    deployments, mode: "sweep", productionBranch: "main", openPrs: [{ number: 3, headRef: "x" }],
+    previewBranches: ["preview/live", "not-a-preview-branch"],
+  });
+  // positive control: the deleted branch's preview is swept
+  assert.deepEqual(ids(t), [gone]);
 });

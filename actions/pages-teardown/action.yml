@@ -1,19 +1,23 @@
 name: Cloudflare Pages preview teardown
 description: >-
   Delete Cloudflare Pages preview deployments: a closed pull request's pr-<number>
-  previews (mode pr), or every preview no open pull request claims (mode sweep). Never
-  deletes a production deployment.
+  previews (mode pr), a deleted preview/** branch's pv-<hash> previews (mode branch), or
+  every preview no open pull request and no existing preview/** branch claims (mode sweep).
+  Never deletes a production deployment.
 
 inputs:
   project-name:
     description: The Cloudflare Pages project.
     required: true
   mode:
-    description: '"pr" (on pull_request closed) or "sweep" (on a schedule).'
+    description: '"pr" (on pull_request closed), "branch" (on delete) or "sweep" (on a schedule).'
     required: true
   pr-number:
     description: The closed pull request, for mode pr.
     default: ${{ github.event.pull_request.number }}
+  branch:
+    description: The deleted preview/** branch, for mode branch.
+    default: ${{ github.event.ref }}
   api-token:
     description: secrets.CLOUDFLARE_API_TOKEN (Pages - Edit).
     required: true
@@ -21,7 +25,7 @@ inputs:
     description: secrets.CLOUDFLARE_ACCOUNT_ID.
     required: true
   github-token:
-    description: A token that may read pull requests and edit comments.
+    description: A token that may read pull requests and branches and edit comments.
     default: ${{ github.token }}
 
 runs:
@@ -31,6 +35,7 @@ runs:
       env:
         MODE: ${{ inputs.mode }}
         PR_NUMBER: ${{ inputs.pr-number }}
+        BRANCH: ${{ inputs.branch }}
         PROJECT_NAME: ${{ inputs.project-name }}
         CLOUDFLARE_API_TOKEN: ${{ inputs.api-token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.account-id }}

@@ -1,0 +1,28 @@
+# The preview-only route: a push to a preview/** branch deploys a Cloudflare Pages preview,
+# with no pull request and no tests. For a throwaway prototype someone checks on a phone;
+# there is nothing to merge. The job is TimZander/ci-recipes' pages-branch-preview.yml,
+# pinned to the same commit as preview.yml and preview-teardown.yml; this file holds only the
+# trigger, the build and the secrets. Written by /ci:init; move the pin with /ci:update.
+#
+# The URL is in the run's summary, and in the job's log as a line that starts preview-url:.
+# Deleting the branch deletes the preview (preview-teardown.yml). See ci-recipes' STANDARD.md.
+name: Branch preview
+
+on:
+  push:
+    branches: ['preview/**']
+
+jobs:
+  preview:
+    permissions:
+      contents: read
+    uses: TimZander/ci-recipes/.github/workflows/pages-branch-preview.yml@__SHA__
+    with:
+      project-name: __PROJECT__
+      directory: dist
+      wrangler-version: '__WRANGLER__'
+      node-version: '22'
+      build-command: npm ci && npm run build
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

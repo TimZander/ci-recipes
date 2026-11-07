@@ -7,9 +7,11 @@ and why. This repository holds the code that does it.
 | Path | What it is |
 |---|---|
 | `.github/workflows/pages-preview.yml` | **What a repository calls**: a reusable workflow that builds with the caller's command, deploys preview `pr-<number>` and posts its comment. Owns the concurrency and the fork guard. |
-| `.github/workflows/pages-teardown.yml` | **What a repository calls**: a reusable workflow that tears down on close (in the PR's preview group) or sweeps. |
+| `.github/workflows/pages-branch-preview.yml` | **What a repository calls** for the preview-only route: a push to `preview/**` deploys preview `pv-<hash>`, with no pull request and no tests. Its URL is in the step summary and a `preview-url:` log line. |
+| `.github/workflows/pages-teardown.yml` | **What a repository calls**: a reusable workflow that tears down on close (in the PR's preview group), on a `preview/**` branch's delete, or sweeps. |
 | `actions/pages-preview` | A composite action: deploy a built directory as preview `pr-<number>` and post or update the pull request's one preview comment. |
-| `actions/pages-teardown` | A composite action: delete a closed pull request's previews (`mode: pr`), or every preview no open pull request claims (`mode: sweep`). |
+| `actions/pages-branch-preview` | A composite action: deploy a built directory as a `preview/**` branch's preview `pv-<hash>`, and write its URL to the summary and the log. |
+| `actions/pages-teardown` | A composite action: delete a closed pull request's previews (`mode: pr`), a deleted preview branch's (`mode: branch`), or every preview no open pull request or existing preview branch claims (`mode: sweep`). |
 | `templates/` | The small caller workflows (triggers, build inputs, secrets) a repository starts from. `/ci:init` (the `ci` plugin in TimZander/claude) fills them in. |
 | `scripts/ci_minutes.py` | A pull request's billed Actions minutes: `scripts/ci_minutes.py --repo OWNER/NAME <pr>...` (needs `gh`). |
 | `docs/decisions/` | Why it is built this way. |
@@ -35,7 +37,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 ```
 
-`templates/` has both callers in full. The actions under `actions/` still work as steps on
+`templates/` has the three callers in full. The actions under `actions/` still work as steps on
 their own, but a caller that uses them directly takes on the concurrency and guards itself.
 Everything runs on the runner's own Node.js, with nothing to install. The caller needs the repository secrets `CLOUDFLARE_API_TOKEN` (Pages: Edit) and
 `CLOUDFLARE_ACCOUNT_ID`.
@@ -48,6 +50,6 @@ python3 -m unittest discover -s tests
 ```
 
 `tests/workflows.test.mjs` checks the reusable workflows and the templates line by line,
-each rule with a positive control. `tests/scripts.e2e.test.mjs` runs both scripts against a local fake of the GitHub and
+each rule with a positive control. `tests/scripts.e2e.test.mjs` runs the scripts against a local fake of the GitHub and
 Cloudflare APIs. A change to either API's real behaviour still needs a real run: the first
 caller to adopt a change is its live test.
