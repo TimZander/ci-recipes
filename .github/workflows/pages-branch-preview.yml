@@ -71,6 +71,9 @@ on:
 
 jobs:
   preview:
+    # A branch's delete can also arrive as a push with deleted set: never a preview run, and it
+    # must not take the branch's group from the teardown.
+    if: github.event.deleted != true
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     # One preview per branch; a newer push cancels the run in progress. The branch's delete
@@ -82,16 +85,24 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Also fixes the preview's name, pv-<hash> (alias.mjs computes the same; a test compares
+      # them), before any of the branch's code runs: nothing the build does can change it.
       - name: Refuse a call this workflow cannot serve
+        id: refuse
         env:
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
+          BRANCH: ${{ github.ref_name }}
           DIRECTORY: ${{ inputs.directory }}
+          WORKDIR: ${{ inputs.working-directory }}
         run: |
           set -euo pipefail
           [ "$EVENT" = push ] || { echo "::error::pages-branch-preview.yml is called on push only, not $EVENT"; exit 1; }
           case "$REF" in refs/heads/preview/?*) ;; *) echo "::error::pages-branch-preview.yml serves preview/** branches only, not $REF (a push to any other branch could reach production)"; exit 1 ;; esac
-          case "$DIRECTORY" in .|./|""|.ci-recipes*|./.ci-recipes*) echo "::error::directory '$DIRECTORY' would publish the whole checkout or ci-recipes itself"; exit 1 ;; esac
+          case "$DIRECTORY" in .|./|""|.ci-recipes*|./.ci-recipes*|/*|..|../*|*/..|*/../*) echo "::error::directory '$DIRECTORY' would publish the whole checkout, ci-recipes itself or something outside working-directory"; exit 1 ;; esac
+          case "$WORKDIR" in /*|..|../*|*/..|*/../*) echo "::error::working-directory '$WORKDIR' is outside the checkout"; exit 1 ;; esac
+          alias=pv-$(printf %s "$BRANCH" | sha256sum | cut -c1-12)
+          echo "alias=$alias" >> "$GITHUB_OUTPUT"
 
       # The pushed commit, the one the summary names.
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -115,8 +126,8 @@ jobs:
           BUILD_COMMAND: ${{ inputs.build-command }}
         run: bash -euo pipefail -c "$BUILD_COMMAND"
 
-      # PINNED-CHECKOUT: identical in pages-preview.yml and pages-teardown.yml (a test compares
-      # them). The actions run at exactly the commit the caller pinned: job.workflow_sha names
+      # PINNED-CHECKOUT: identical in pages-preview.yml, pages-branch-preview.yml and
+      # pages-teardown.yml (a test compares them). The actions run at exactly the commit the caller pinned: job.workflow_sha names
       # the commit of the workflow defining this job (ci-recipes'), where github.workflow_sha
       # would name the caller's. Refuses an empty or non-SHA value, another commit, or a tree
       # that differs from that commit.
@@ -144,6 +155,7 @@ jobs:
           directory: ${{ inputs.directory }}
           working-directory: ${{ inputs.working-directory }}
           wrangler-version: ${{ inputs.wrangler-version }}
+          alias: ${{ steps.refuse.outputs.alias }}
           note: ${{ inputs.note }}
           api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

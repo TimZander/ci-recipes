@@ -2,7 +2,8 @@
 // branch name's sha256>. A pull request's preview is pr-<number>; a preview/** branch has no
 // number, and its name can be long, while Cloudflare keeps 28 characters of a branch in the
 // alias hostname (garmin-map #164). A hash is short, can never be main or pr-<n>, and is
-// computed here only: the deploy and the teardown both import it, so they cannot drift.
+// computed here for the teardown. The deploy computes it in bash before the build
+// (pages-branch-preview.yml), so the build cannot change it; a test checks the two agree.
 //
 // Run as a script, it writes alias=<name> for $BRANCH to $GITHUB_OUTPUT.
 import { createHash } from "node:crypto";

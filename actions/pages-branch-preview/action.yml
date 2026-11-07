@@ -25,6 +25,11 @@ inputs:
   account-id:
     description: secrets.CLOUDFLARE_ACCOUNT_ID.
     required: true
+  alias:
+    description: >-
+      The preview's name, pv-<the first 12 hex digits of the branch's sha256> (alias.mjs).
+      Compute it before the build, so the build cannot change it; pages-branch-preview.yml does.
+    required: true
   note:
     description: An optional line for the summary.
     default: ''
@@ -53,13 +58,14 @@ runs:
           echo "::error::pages-branch-preview runs on preview/** branches only (got $REF)"; exit 1 ;;
         esac
 
-    # pv-<hash>, computed in alias.mjs only. LOAD-BEARING: the teardown imports the same
-    # function to find what to delete.
-    - id: alias
-      shell: bash
+    # The name comes in from before the build; here only its shape is checked, in bash, so no
+    # interpreter the build could have replaced names the deploy. LOAD-BEARING: the teardown
+    # computes the same pv-<hash> (alias.mjs) to find what to delete.
+    - shell: bash
       env:
-        BRANCH: ${{ github.ref_name }}
-      run: node "$GITHUB_ACTION_PATH/alias.mjs"
+        ALIAS: ${{ inputs.alias }}
+      run: |
+        [[ "$ALIAS" =~ ^pv-[0-9a-f]{12}$ ]] || { echo "::error::alias '$ALIAS' is not pv-<12 hex digits>"; exit 1; }
 
     - id: deploy
       uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
@@ -69,7 +75,7 @@ runs:
         workingDirectory: ${{ inputs.working-directory }}
         wranglerVersion: ${{ inputs.wrangler-version }}
         packageManager: npm
-        command: pages deploy ${{ inputs.directory }} --project-name=${{ inputs.project-name }} --branch=${{ steps.alias.outputs.alias }}
+        command: pages deploy ${{ inputs.directory }} --project-name=${{ inputs.project-name }} --branch=${{ inputs.alias }}
 
     - shell: bash
       env:

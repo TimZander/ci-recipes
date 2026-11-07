@@ -13,7 +13,9 @@ export const URL_LINE = "preview-url: ";
 /** The step summary. As in a PR's comment, the stable link only when Cloudflare returned one. */
 export function summaryBody({ deploymentUrl, aliasUrl, branch, sha, note }) {
   if (!deploymentUrl) throw new Error("summaryBody: deploymentUrl is required");
-  const lines = [`**Preview ready** for \`${branch}\` at ${sha ? sha.slice(0, 7) : "this commit"}.`, ""];
+  // A ref name may hold backticks and angle brackets: shown as plain characters only.
+  const shown = String(branch ?? "").replace(/[^\w./-]/g, "_");
+  const lines = [`**Preview ready** for \`${shown}\` at ${sha ? sha.slice(0, 7) : "this commit"}.`, ""];
   if (aliasUrl && aliasUrl !== deploymentUrl) {
     lines.push(`Stable link (always this branch's latest build; bookmark it): ${aliasUrl}`, "");
   }

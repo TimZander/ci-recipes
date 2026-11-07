@@ -37,8 +37,11 @@ The owner's answers to the issue's two questions:
 The details stand as the issue proposed them:
 
 - **The name is `pv-<the first 12 hex digits of the branch name's sha256>`.** It is short,
-  where Cloudflare keeps 28 characters of a branch, it can never be `main` or `pr-<n>`, and it
-  is computed in one module that the deploy and the teardown both import.
+  where Cloudflare keeps 28 characters of a branch, and it can never be `main` or `pr-<n>`.
+  The deploy computes it in bash before the build, so the build cannot change it, and the
+  action checks only its shape. The teardown computes the same name in `alias.mjs`, and a test
+  checks that the two agree. (A first version computed it in node after the build, one
+  module for both; review found that a build could then rename the deploy to `main`.)
 - **The URL goes to the step summary**, and to one `preview-url:` line of the job's log for an
   agent.
 - **Teardown is on the `delete` event**, unless the branch exists again. The delete of any
@@ -54,5 +57,8 @@ The details stand as the issue proposed them:
   branch too. The route saves their minutes only where they run on `pull_request` and `main`.
 - Bad, because a preview branch left undeleted keeps its preview indefinitely, by the owner's
   choice. The sweep can't tell an abandoned prototype from a live one.
+- Neutral: the route's guards catch a wrongly wired caller, not someone with push access, who
+  can push a `preview/**` branch with any caller workflow, as they can open a pull request
+  with one. The Cloudflare token's scope is what limits them, as it does today.
 - The callers' side, `/ci:init` writing the new caller and the sdd workshop naming the route,
   is TimZander/claude#259.

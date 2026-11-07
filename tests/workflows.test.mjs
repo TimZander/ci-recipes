@@ -153,14 +153,23 @@ test("the branch preview refuses any event but push, any branch but preview/**, 
   const p = read(BRANCH_PREVIEW);
   assert.match(p, /\[ "\$EVENT" = push \] \|\| \{/);
   assert.match(p, /case "\$REF" in refs\/heads\/preview\/\?\*\) ;; \*\)/);
-  assert.match(p, /case "\$DIRECTORY" in \.\|\.\/\|""\|\.ci-recipes\*\|\.\/\.ci-recipes\*\)/);
+  assert.match(p, /case "\$DIRECTORY" in \.\|\.\/\|""\|\.ci-recipes\*\|\.\/\.ci-recipes\*/);
   assert.ok(p.indexOf("Refuse a call this workflow cannot serve") < p.indexOf("- name: Build"));
   // the action refuses the same, so the deploy cannot be reached around the workflow
   const a = read("actions/pages-branch-preview/action.yml");
   assert.match(a, /\[ "\$EVENT" = push \] \|\|/);
   assert.match(a, /case "\$REF" in refs\/heads\/preview\/\?\*\) ;; \*\)/);
   assert.ok(a.indexOf('case "$REF"') < a.indexOf("- id: deploy"), "refused before the deploy");
-  assert.match(a, /--branch=\$\{\{ steps\.alias\.outputs\.alias \}\}/);
+  // the name is fixed before the build, and the action checks its shape before the deploy
+  assert.ok(p.indexOf("sha256sum") < p.indexOf("- name: Build"), "the name is computed before the build");
+  assert.match(p, /alias: \$\{\{ steps\.refuse\.outputs\.alias \}\}/);
+  assert.match(a, /\[\[ "\$ALIAS" =~ \^pv-\[0-9a-f\]\{12\}\$ \]\] \|\|/);
+  assert.ok(a.indexOf('"$ALIAS" =~') < a.indexOf("- id: deploy"), "checked before the deploy");
+  assert.match(a, /--branch=\$\{\{ inputs\.alias \}\}/);
+  assert.doesNotMatch(a, /run: node .*alias\.mjs/, "no interpreter runs between the build and the deploy to name it");
+  assert.match('      run: node "$GITHUB_ACTION_PATH/alias.mjs"', /run: node .*alias\.mjs/); // positive control
+  // a branch's delete is never a preview run
+  assert.match(p, /^    if: github\.event\.deleted != true$/m);
 });
 
 test("the teardown skips the delete of anything but a preview/** branch", () => {
@@ -183,8 +192,28 @@ test("ci-recipes is checked out only after the build, right before the action th
 test("the preview refuses any event but pull_request, and a directory that would publish the checkout", () => {
   const p = read(PREVIEW);
   assert.match(p, /\[ "\$EVENT" = pull_request \] \|\| \{/);
-  assert.match(p, /case "\$DIRECTORY" in \.\|\.\/\|""\|\.ci-recipes\*\|\.\/\.ci-recipes\*\)/);
+  assert.match(p, /case "\$DIRECTORY" in \.\|\.\/\|""\|\.ci-recipes\*\|\.\/\.ci-recipes\*/);
   assert.ok(p.indexOf("Refuse a call this workflow cannot serve") < p.indexOf("- name: Build"));
+});
+
+/** The refuse step's directory check, run in bash as the workflow runs it. */
+async function directoryRefused(file, DIRECTORY) {
+  const p = read(file);
+  const lines = p.split("\n").filter((l) => /case "\$(DIRECTORY|WORKDIR)" in/.test(l)).map((l) => l.trim());
+  assert.ok(lines.length >= 2, `${file}: directory and working-directory checks`);
+  const { execFile } = await import("node:child_process");
+  return new Promise((resolve) => execFile("bash", ["-c", `set -euo pipefail\n${lines.join("\n")}`],
+    { env: { PATH: process.env.PATH, DIRECTORY, WORKDIR: "." } }, (err) => resolve(Boolean(err))));
+}
+test("both previews refuse a directory outside the build: the checkout, a parent, an absolute path", async () => {
+  for (const file of [PREVIEW, BRANCH_PREVIEW]) {
+    for (const d of [".", "./", "", "..", "../x", "dist/..", "dist/../..", "/etc", ".ci-recipes", "./.ci-recipes/x"]) {
+      assert.equal(await directoryRefused(file, d), true, `${file}: ${JSON.stringify(d)}`);
+    }
+    for (const d of ["dist", "build/site", "./dist", "out.d"]) {
+      assert.equal(await directoryRefused(file, d), false, `${file}: ${d} is allowed`); // positive control
+    }
+  }
 });
 
 test("every action used is pinned to a SHA, and every local one exists", () => {

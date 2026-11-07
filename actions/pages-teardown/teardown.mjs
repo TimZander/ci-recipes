@@ -125,8 +125,10 @@ async function main() {
   let openPrs = [];
   const previewBranches = [];
   if (e.MODE === "branch") {
+    // GitHub's startsWith() ignores case, so the job's if: lets Preview/x through: not ours.
+    if (!e.BRANCH) throw new Error("branch mode needs BRANCH");
+    if (!isPreviewBranch(e.BRANCH)) { console.log(`${e.BRANCH} is not a preview branch: nothing to delete`); return; }
     // A branch pushed again since its delete keeps its preview.
-    if (!isPreviewBranch(e.BRANCH)) throw new Error(`branch mode needs a preview branch, not ${JSON.stringify(e.BRANCH)}`);
     const ref = e.BRANCH.split("/").map(encodeURIComponent).join("/");
     const r = await ghCall(`/git/ref/heads/${ref}`);
     if (r.ok) { console.log(`${e.BRANCH} exists again: nothing deleted`); return; }
@@ -148,13 +150,17 @@ async function main() {
     }
     // The preview branches that still exist keep their previews. No match is an empty list;
     // anything but a list stops the sweep before a delete, since treating it as empty would
-    // delete every live branch preview.
+    // delete every live branch preview. The endpoint may ignore paging and answer the whole
+    // list each time, so a page that adds nothing new ends it.
+    const seenRefs = new Set();
     for (let page = 1; page <= 50; page++) {
       const r = await ghCall(`/git/matching-refs/heads/${PREVIEW_PREFIX}?per_page=100&page=${page}`);
       if (!r.ok || !Array.isArray(r.json)) throw new Error(`listing preview branches failed: HTTP ${r.status}`);
-      previewBranches.push(...r.json.map((x) => String(x.ref).replace(/^refs\/heads\//, "")));
-      if (r.json.length < 100) break;
+      const before = seenRefs.size;
+      for (const x of r.json) seenRefs.add(String(x.ref).replace(/^refs\/heads\//, ""));
+      if (r.json.length < 100 || seenRefs.size === before) break;
     }
+    previewBranches.push(...seenRefs);
   }
 
   const targets = selectTargets({

@@ -49,8 +49,8 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      # PINNED-CHECKOUT: identical in pages-preview.yml and pages-teardown.yml (a test compares
-      # them). The actions run at exactly the commit the caller pinned: job.workflow_sha names
+      # PINNED-CHECKOUT: identical in pages-preview.yml, pages-branch-preview.yml and
+      # pages-teardown.yml (a test compares them). The actions run at exactly the commit the caller pinned: job.workflow_sha names
       # the commit of the workflow defining this job (ci-recipes'), where github.workflow_sha
       # would name the caller's. Refuses an empty or non-SHA value, another commit, or a tree
       # that differs from that commit.

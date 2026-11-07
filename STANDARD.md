@@ -27,7 +27,8 @@ wait for them. **Production deploys only after the tests pass.**
   already change the workflows; what the shared job guards against is the build's own
   dependencies. Nothing of ci-recipes is on disk while the build runs: it is checked out
   afterwards, verified against the pinned commit, and run straight away. A process the build
-  leaves running in the background could still interfere; keep the token's scope to Pages: Edit.
+  leaves running in the background, or what it writes to `$GITHUB_PATH` or `$GITHUB_ENV` for
+  later steps, could still interfere; keep the token's scope to Pages: Edit.
 
 ## 2. One name for a preview: `pr-<number>`
 
@@ -168,7 +169,14 @@ merge" protection was the title alone (ci-recipes#4, decision 0008).
   `preview-url:` log line (rule 3).
 - Deleting the branch deletes the preview; the sweep keeps it while the branch exists (rule 4).
 - The workflow and its action both refuse any event but `push` and any ref but
-  `refs/heads/preview/…`, so no other branch, `main` included, can reach the deploy.
+  `refs/heads/preview/…`. That catches a caller wired to the wrong trigger. It is not a
+  boundary against someone with push access: they can push a `preview/**` branch whose own
+  caller workflow does anything the repository's secrets allow, as a pull request's author
+  can. What limits them is the token's scope (rule 1).
+- Its name is fixed before the build, in bash, and only its shape is checked after it, so
+  the build cannot rename the deploy, to `main` for one. The build's dependencies can still
+  reach the deploy step through what the runner carries between steps (`$GITHUB_PATH`,
+  `$GITHUB_ENV`), as on a pull request.
 - It is built from the pushed commit, with the same order as a pull request's preview: the
   build first, then ci-recipes checked out at the pinned commit, then the deploy (rule 1).
 - A repository whose other workflows run on every push runs them on a `preview/**` push too;

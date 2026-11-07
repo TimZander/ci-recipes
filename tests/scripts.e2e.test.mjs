@@ -60,6 +60,8 @@ function fakeApi(state) {
       }
       if (req.method === "GET" && path === `/repos/${REPO}/git/matching-refs/heads/preview/`) {
         if (state.failRefs) return send(state.failRefs, { message: "nope" });
+        const all = (state.refs ?? []).filter((b) => b.startsWith("preview/")).map((b) => ({ ref: `refs/heads/${b}` }));
+        if (state.refsIgnorePaging) return send(200, all);
         return send(200, paged((state.refs ?? []).filter((b) => b.startsWith("preview/")).map((b) => ({ ref: `refs/heads/${b}` }))));
       }
       // Cloudflare: pages of 25, like the real API; an empty page ends the list
@@ -230,14 +232,18 @@ test("teardown branch: a branch pushed again keeps its preview", async () => {
   } finally { await api.close(); }
 });
 
-test("teardown branch: anything but a preview branch exits non-zero before a delete", async () => {
+test("teardown branch: another branch's delete deletes nothing; no branch at all is an error", async () => {
   const state = { deployments: [dep("main"), dep("pr-1")], refs: [], comments: [] };
   const api = await fakeApi(state);
   try {
-    for (const BRANCH of ["", "main", "branches/4-x"]) {
+    // GitHub's startsWith() ignores case, so the job's if: lets Preview/x through: nothing to do
+    for (const BRANCH of ["main", "branches/4-x", "Preview/x", "PREVIEW/x"]) {
       const r = await teardown(api, { MODE: "branch", BRANCH });
-      assert.notEqual(r.code, 0, BRANCH);
+      assert.equal(r.code, 0, BRANCH);
+      assert.match(r.stdout, /not a preview branch: nothing to delete/, BRANCH);
     }
+    const r = await teardown(api, { MODE: "branch", BRANCH: "" });
+    assert.notEqual(r.code, 0, "an empty branch is a caller mistake");
     assert.equal(state.deployments.length, 2);
     assert.ok(!api.log.some((l) => l.startsWith("DELETE")));
   } finally { await api.close(); }
@@ -255,6 +261,18 @@ test("teardown sweep: keeps an existing preview branch's preview, removes a dele
 });
 
 const scratch = () => mkdtempSync(join(tmpdir(), "ci-recipes-"));
+
+test("the bash name the workflow computes before the build equals alias.mjs's", async () => {
+  const wf = readFileSync(join(root, ".github/workflows/pages-branch-preview.yml"), "utf8");
+  const line = wf.split("\n").find((l) => l.includes("sha256sum"));
+  assert.ok(line, "the workflow computes the name with sha256sum");
+  const cmd = line.trim().replace(/^alias=/, "");
+  for (const BRANCH of ["preview/7-proto", "preview/a/b-c_d.e", "preview/x`y"]) {
+    const got = await new Promise((resolve) => execFile("bash", ["-c", `set -euo pipefail; echo ${cmd}`],
+      { env: { PATH: process.env.PATH, BRANCH } }, (err, stdout) => resolve(err ? `error ${err.message}` : stdout.trim())));
+    assert.equal(got, previewAlias(BRANCH), BRANCH);
+  }
+});
 
 test("alias script: writes the branch's pv- name to GITHUB_OUTPUT, refuses main", async () => {
   const out = join(scratch(), "out");
@@ -282,8 +300,27 @@ test("summary script: one stable preview-url line, and the links in the step sum
   const body = readFileSync(summary, "utf8");
   assert.match(body, /Stable link .*https:\/\/pv-1\.proj/);
   assert.match(body, /This commit: https:\/\/abc\.proj/);
+  // a branch name shows as plain text: no markup gets through
+  const odd = join(scratch(), "odd");
+  writeFileSync(odd, "");
+  await run("actions/pages-branch-preview/summary.mjs", {
+    DEPLOYMENT_URL: "https://abc.proj.pages.dev", BRANCH: "preview/x`<img/src=//e.example>(y)", GITHUB_STEP_SUMMARY: odd,
+  });
+  assert.doesNotMatch(readFileSync(odd, "utf8"), /[<>]|`.*`.*`/);
   const none = await run("actions/pages-branch-preview/summary.mjs", { DEPLOYMENT_URL: "", BRANCH: "preview/x" });
   assert.notEqual(none.code, 0, "no URL: no summary that says ready");
+});
+
+test("teardown sweep: a listing that ignores paging is read once, not 50 times", async () => {
+  const branches = Array.from({ length: 120 }, (_, i) => `preview/p${i}`);
+  const state = { deployments: branches.map((b) => dep(previewAlias(b))), refs: branches, openPrs: [], comments: [], refsIgnorePaging: true };
+  const api = await fakeApi(state);
+  try {
+    const r = await teardown(api, { MODE: "sweep" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(state.deployments.length, 120, "every live branch kept");
+    assert.ok(api.log.filter((l) => l.includes("matching-refs")).length <= 2, "stops when a page adds nothing");
+  } finally { await api.close(); }
 });
 
 test("teardown sweep: a failed preview-branch listing deletes nothing", async () => {
