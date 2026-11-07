@@ -99,13 +99,34 @@ The comment starts with `<!-- cf-preview-deploy -->` and is updated in place on 
 - A `pull_request` path filter matches the whole pull request's diff and re-fires on every
   later push. A filter added "so the guard can run" can cost more than the guard saves
   (AudioClassifier #568).
-- **A pull request that changes no code runs no tests and no preview.** The preview and the
-  test workflows' `pull_request` triggers carry `paths-ignore` for the code-free paths:
-  `openspec/**`, `docs/**` and root `*.md`, plus any the repository adds. A skipped workflow
-  bills nothing, where a job that reads the diff bills a minute itself. timzander.com #168, an
-  archive-only pull request, ran both (decision 0007).
+- **A workflow skips a pull request only when it changes nothing that workflow reads.**
+  "Code-free" is not "test-free": in timzander.com the tests read `openspec/`, `README.md`
+  and `CLAUDE.md`, so a spec-only pull request must still run them. Spec validation is never
+  skipped. timzander.com #168, an archive-only pull request, ran a preview it did not need
+  (decision 0007).
+  - **The preview** skips `openspec/**`, `docs/**` and root `*.md` by default
+    (`paths-ignore` in the preview template), since none of them is built into the site.
+    Remove `docs/**` where `docs/` is the site, and add the repository's other paths the
+    build never reads.
+  - **The tests** are filtered per repository, only on the paths none of their steps read,
+    and only after checking that. painting skips its Python job on its own list (`docs/` but
+    not `docs/inputs/`, and not Python files under `openspec/` or `.claude/`) while its spec
+    job always runs. Birdsong ID's PWA tests read nothing outside `pwa/`, and its spec checks
+    run in the unfiltered `sdd-checks`.
+  - **Prefer `paths-ignore` to `paths:`.** A `paths-ignore` list fails safe: a new code
+    directory runs everything. A `paths:` list fails open: a new file the workflow needs is
+    skipped until someone adds it, as Birdsong ID's deploy filters had to be extended for its
+    `bin/` staging scripts (#416). Never set both on one trigger: GitHub refuses the workflow.
+  - A skipped workflow bills nothing. A job that reads the diff itself bills a minute, and is
+    worth it only when the filter must do more, such as painting's skip of a follow-up push
+    that leaves the tested tree unchanged.
   - The filter is on the whole pull request's diff, so a later push that touches code runs
-    everything again.
+    everything again. The reverse leaves the preview stale: a push that makes the pull request
+    code-free again deploys nothing, and the last preview stays up until the pull request
+    closes.
+  - GitHub's path filters see only the first 300 changed files, so a larger pull request may
+    be skipped though it changes code. Painting runs everything at 300 files or more
+    (its decision 0102).
   - The teardown never has a path filter: a pull request whose code was reverted still closes
     with a preview to delete.
   - A skipped workflow reports no status, so a required check on it never passes. A repository

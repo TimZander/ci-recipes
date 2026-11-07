@@ -11,4 +11,4 @@ an earlier one marks the old one superseded rather than editing it.
 | [0004](0004-pins-move-with-ci-update-not-dependabot.md) | Callers' pins move with `/ci:update`, not Dependabot | accepted |
 | [0005](0005-reusable-workflows-own-the-rules.md) | Callers reference reusable workflows; the rules live in ci-recipes once | accepted |
 | [0006](0006-previews-build-the-head-and-fetch-ci-recipes-after-the-build.md) | Previews build the PR head, and fetch ci-recipes only after the build | accepted |
-| [0007](0007-code-free-pull-requests-skip-ci-by-path-filter.md) | Code-free pull requests skip the tests and the preview, by the caller's path filter | accepted |
+| [0007](0007-a-workflow-skips-only-paths-it-never-reads.md) | A workflow skips a pull request only when it changes nothing that workflow reads | accepted |
