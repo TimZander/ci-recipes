@@ -30,7 +30,10 @@ function fakeApi(state) {
       };
       const per = 100;
       const paged = (arr) => arr.slice((page - 1) * per, page * per);
-      // GitHub
+      // GitHub; `refuse` names a comment write ("POST" or "PATCH") the token may not make
+      if (state.refuse === req.method && path.startsWith(`/repos/${REPO}/issues/`)) {
+        return send(403, { message: "Resource not accessible by integration" });
+      }
       if (req.method === "GET" && path === `/repos/${REPO}/issues/7/comments`) return send(200, paged(state.comments));
       if (req.method === "POST" && path === `/repos/${REPO}/issues/7/comments`) {
         const c = { id: 9000 + state.comments.length, user: { login: BOT }, body: JSON.parse(raw).body };
@@ -100,6 +103,24 @@ test("comment: finds ours past the first page of comments", async () => {
     assert.match(ours.body, /Preview ready/);
   } finally { await api.close(); }
 });
+
+// The deploy runs first (action.yml), so a refused comment means a preview whose link was never
+// posted: the job must go red, not pass unseen (timzander.com PLAT-8.2, its conformance C2).
+for (const [write, comments] of [
+  ["POST", []],
+  ["PATCH", [{ id: 1, user: { login: BOT }, body: `${MARKER}\nold` }]],
+]) {
+  test(`comment: a refused ${write} exits non-zero and says why`, async () => {
+    const state = { comments, refuse: write };
+    const api = await fakeApi(state);
+    try {
+      const r = await comment({ GITHUB_API_URL: api.base });
+      assert.notEqual(r.code, 0);
+      assert.match(r.stderr, new RegExp(`${write} .*HTTP 403`));
+      assert.ok(api.log.some((l) => l.startsWith(write)), "the write was attempted");
+    } finally { await api.close(); }
+  });
+}
 
 test("comment: missing inputs exit non-zero", async () => {
   const r = await comment({ GITHUB_API_URL: "http://127.0.0.1:9", DEPLOYMENT_URL: "" });
