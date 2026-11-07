@@ -185,3 +185,17 @@ test("templates hold none of the rules the reusable workflows own", () => {
   // positive control
   assert.match("jobs:\n  preview:\n    if: github.event.pull_request.head.repo.full_name == github.repository\n", RULE_KEYS);
 });
+
+const CODE_FREE = ["- 'openspec/**'", "- 'docs/**'", "- '*.md'"];
+test("the preview template skips a pull request that changes no code", () => {
+  const rules = CODE_FREE.map((l) => [l, l, ["on", "pull_request", "paths-ignore"]]);
+  assert.deepEqual(broken(read(TEMPLATES[0]), rules), []);
+  // positive control: the same entries under another key are reported
+  const moved = "on:\n  pull_request:\n    paths:\n" + CODE_FREE.map((l) => `      ${l}`).join("\n") + "\n";
+  assert.equal(broken(moved, rules).length, CODE_FREE.length);
+});
+
+test("the teardown template has no path filter: a close always tears down", () => {
+  assert.doesNotMatch(read(TEMPLATES[1]), /^\s*paths(-ignore)?:/m);
+  assert.match("    paths-ignore:", /^\s*paths(-ignore)?:/m); // positive control
+});

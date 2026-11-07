@@ -96,6 +96,17 @@ The comment starts with `<!-- cf-preview-deploy -->` and is updated in place on 
 - A `pull_request` path filter matches the whole pull request's diff and re-fires on every
   later push. A filter added "so the guard can run" can cost more than the guard saves
   (AudioClassifier #568).
+- **A pull request that changes no code runs no tests and no preview.** The preview and the
+  test workflows' `pull_request` triggers carry `paths-ignore` for the code-free paths:
+  `openspec/**`, `docs/**` and root `*.md`, plus any the repository adds. A skipped workflow
+  bills nothing, where a job that reads the diff bills a minute itself. timzander.com #168, an
+  archive-only pull request, ran both (decision 0007).
+  - The filter is on the whole pull request's diff, so a later push that touches code runs
+    everything again.
+  - The teardown never has a path filter: a pull request whose code was reverted still closes
+    with a preview to delete.
+  - A skipped workflow reports no status, so a required check on it never passes. A repository
+    that requires one leaves that workflow unfiltered.
 
 ## 7. Small things every workflow does
 
