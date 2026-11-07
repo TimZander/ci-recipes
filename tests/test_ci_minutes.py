@@ -103,6 +103,23 @@ class RunsOfAPullRequest(unittest.TestCase):
         got = cm.runs_of_pr(self.first, self.branch_runs, [deploy, deploy])
         self.assertEqual([r["id"] for r in got], [1, 2, 3, 9])
 
+    def test_aScheduledOrDispatchedRunOnTheMergeCommit_isNotThePrs(self):
+        # timzander.com's daily deploy runs on main's tip, which is the last merged PR's merge
+        # commit until the next merge: #164 was charged 23 minutes of it. A manual re-run lands
+        # there the same way.
+        deploy = run(9, "2026-11-07T02:51:30Z", "m1", branch="main", event="push")
+        later = [run(10 + i, "2026-11-08T01:05:00Z", "m1", branch="main", event=e)
+                 for i, e in enumerate(["schedule", "workflow_dispatch", "repository_dispatch"])]
+        got = cm.runs_of_pr(self.first, self.branch_runs, [deploy, *later])
+        self.assertEqual([r["id"] for r in got], [1, 2, 3, 9])
+
+    def test_aRunChainedOffTheMergesPush_isThePrs(self):
+        # positive control: the filter leaves out only what a schedule or a person started
+        deploy = run(9, "2026-11-07T02:51:30Z", "m1", branch="main", event="push")
+        chained = run(10, "2026-11-07T02:55:00Z", "m1", branch="main", event="workflow_run")
+        got = cm.runs_of_pr(self.first, self.branch_runs, [deploy, chained])
+        self.assertEqual([r["id"] for r in got], [1, 2, 3, 9, 10])
+
     def test_anOpenPr_hasNoUpperBound(self):
         still_open = pr("2026-11-07T02:56:00Z", None, "bbb")
         self.assertEqual([r["id"] for r in cm.runs_of_pr(still_open, self.branch_runs, [])], [4, 5])
