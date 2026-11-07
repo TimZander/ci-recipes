@@ -1,0 +1,38 @@
+name: Cloudflare Pages preview teardown
+description: >-
+  Delete Cloudflare Pages preview deployments: a closed pull request's pr-<number>
+  previews (mode pr), or every preview no open pull request claims (mode sweep). Never
+  deletes a production deployment.
+
+inputs:
+  project-name:
+    description: The Cloudflare Pages project.
+    required: true
+  mode:
+    description: '"pr" (on pull_request closed) or "sweep" (on a schedule).'
+    required: true
+  pr-number:
+    description: The closed pull request, for mode pr.
+    default: ${{ github.event.pull_request.number }}
+  api-token:
+    description: secrets.CLOUDFLARE_API_TOKEN (Pages - Edit).
+    required: true
+  account-id:
+    description: secrets.CLOUDFLARE_ACCOUNT_ID.
+    required: true
+  github-token:
+    description: A token that may read pull requests and edit comments.
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        PROJECT_NAME: ${{ inputs.project-name }}
+        CLOUDFLARE_API_TOKEN: ${{ inputs.api-token }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.account-id }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/teardown.mjs"

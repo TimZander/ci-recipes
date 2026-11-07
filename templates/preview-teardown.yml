@@ -1,0 +1,38 @@
+# Removes Cloudflare Pages previews, from TimZander/ci-recipes (STANDARD.md).
+#
+# Fill in: __PROJECT__ and __SHA__ (the same ci-recipes commit as preview.yml). /ci:init
+# does this for you.
+#
+# Two triggers, because either alone leaks: closing a PR removes its pr-<number> previews,
+# and the weekly sweep removes whatever that missed (a failed run, a fork PR with no secrets,
+# previews deployed before the repository adopted pr-<number>).
+name: Preview teardown
+
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    # Off the hour on purpose: GitHub drops scheduled runs at :00 under load.
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: preview-teardown
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  teardown:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: TimZander/ci-recipes/actions/pages-teardown@__SHA__
+        with:
+          project-name: __PROJECT__
+          mode: ${{ github.event_name == 'pull_request' && 'pr' || 'sweep' }}
+          api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
