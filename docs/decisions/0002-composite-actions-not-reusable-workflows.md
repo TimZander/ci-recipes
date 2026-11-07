@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by 0005
 date: 2026-11-06
 decision-makers: the agent, under the owner's plan
 ---

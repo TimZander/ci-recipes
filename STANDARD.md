@@ -1,7 +1,10 @@
 # The CI standard
 
-How every repository here runs CI, and why. The code that carries it out is in
-`actions/`; `templates/` holds the caller workflows a repository starts from. Each rule
+How every repository here runs CI, and why. A repository calls the reusable workflows in
+`.github/workflows/` (`pages-preview.yml`, `pages-teardown.yml`), pinned to one commit, and
+keeps only its triggers, its build and its secrets; the rules below live in those workflows
+and the `actions/` they run, once. `templates/` holds the small callers a repository starts
+from. Each rule
 names the incident it came from, so a rule that has stopped earning its place can be
 recognised and cut. Decisions behind these rules are in `docs/decisions/`.
 
@@ -16,6 +19,15 @@ wait for them. **Production deploys only after the tests pass.**
 - A preview is cheap (about a billed minute) and changes nothing anyone else sees.
 - The preview workflow therefore holds the build and nothing else. It is not a gate: the
   tests are.
+
+- **A preview is built from the pull request's head commit**, the one its comment names, not
+  from GitHub's default merge with the base, which changes whenever the base moves.
+- **The build runs the pull request's own code, in the job that then deploys with the
+  Cloudflare token.** Only a same-repository pull request gets a preview, so its author can
+  already change the workflows; what the shared job guards against is the build's own
+  dependencies. Nothing of ci-recipes is on disk while the build runs: it is checked out
+  afterwards, verified against the pinned commit, and run straight away. A process the build
+  leaves running in the background could still interfere; keep the token's scope to Pages: Edit.
 
 ## 2. One name for a preview: `pr-<number>`
 
@@ -46,7 +58,10 @@ The comment starts with `<!-- cf-preview-deploy -->` and is updated in place on 
 ## 4. Teardown on close, plus a sweep
 
 - **On close:** delete that pull request's `pr-<number>` previews, unless it has been
-  reopened.
+  reopened. The close runs in that pull request's own preview concurrency group, so it cancels
+  a preview still building (which would otherwise deploy after it), and closes never queue
+  behind each other, where GitHub keeps one pending run per group and drops the rest
+  (garmin-map's conformance review).
 - **Weekly sweep:** delete every preview no open pull request claims, either as
   `pr-<number>` or as its head branch. The sweep is what catches a failed teardown, a fork's
   pull request, and previews from before a repository adopted `pr-<number>`. AudioClassifier
@@ -63,7 +78,9 @@ The comment starts with `<!-- cf-preview-deploy -->` and is updated in place on 
 - Every `uses:` is pinned to a **commit SHA**, with the tag in a comment.
 - **wrangler is an exact version**, never a range, so a deploy cannot change without a
   commit (AudioClassifier #527).
-- A repository pins **one ci-recipes commit** for both its preview and its teardown.
+- A repository pins **one ci-recipes commit** for both its preview and its teardown. The
+  reusable workflows check out ci-recipes at `job.workflow_sha`, the commit they were called
+  at, and refuse to run any other, so that one pin covers every script they run.
 - **Pins move forward with `/ci:update`, run when wanted**, not with Dependabot. Every
   Dependabot pull request spends CI minutes (decision 0004, revisitable).
 - The cloud agents' git proxy refuses tag writes, so a release tag is made in the GitHub web

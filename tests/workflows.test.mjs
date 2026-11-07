@@ -1,0 +1,187 @@
+// The reusable workflows and the caller templates: the rules STANDARD.md puts in them. There is
+// no YAML parser in the standard library, so each rule is an exact line AND the key path it must
+// sit under (read from indentation), so a line moved to the wrong job or step does not pass.
+// Every rule has a positive control: the same check, run on a copy with that one thing broken.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+const root = fileURLToPath(new URL("..", import.meta.url));
+const read = (p) => readFileSync(root + p, "utf8");
+const PREVIEW = ".github/workflows/pages-preview.yml";
+const TEARDOWN = ".github/workflows/pages-teardown.yml";
+
+/**
+ * The key path of every non-comment line, from indentation: `jobs > preview > concurrency` for
+ * the group line. A list item (`- name: x`) counts as one level deeper than its dash.
+ * Block scalars (`run: |`) are skipped: their content is not YAML.
+ */
+export function keyPaths(text) {
+  const out = [];
+  const stack = []; // [indent, key]
+  let blockIndent = -1;
+  for (const raw of text.split("\n")) {
+    if (!raw.trim() || raw.trim().startsWith("#")) continue;
+    const lead = raw.length - raw.trimStart().length;
+    if (blockIndent >= 0) {
+      if (lead > blockIndent) continue;
+      blockIndent = -1;
+    }
+    const item = raw.trimStart().startsWith("- ");
+    const body = item ? raw.trimStart().slice(2) : raw.trimStart();
+    const indent = item ? lead + 2 : lead;
+    while (stack.length && stack[stack.length - 1][0] >= indent) stack.pop();
+    out.push({ line: raw.trim(), path: stack.map(([, k]) => k) });
+    const m = /^([\w.-]+):(.*)$/.exec(body);
+    if (m) {
+      stack.push([indent, m[1]]);
+      if (/^\s*[|>]-?\s*$/.test(m[2])) blockIndent = indent;
+    }
+  }
+  return out;
+}
+
+/** The rules whose exact line does not sit under the expected path. */
+function broken(text, rules) {
+  const lines = keyPaths(text);
+  return rules
+    .filter(([, line, path]) => !lines.some((l) => l.line === line && l.path.join(" > ") === path.join(" > ")))
+    .map(([name]) => name);
+}
+
+const PREVIEW_RULES = [
+  ["called, never triggered", "workflow_call:", ["on"]],
+  ["skips forks, runs any other event so it can refuse it",
+    "if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository", ["jobs", "preview"]],
+  ["one group per PR", "group: preview-${{ github.event.pull_request.number }}", ["jobs", "preview", "concurrency"]],
+  ["a newer push cancels", "cancel-in-progress: true", ["jobs", "preview", "concurrency"]],
+  ["builds the PR's head commit", "ref: ${{ github.event.pull_request.head.sha }}", ["jobs", "preview", "steps", "with"]],
+  ["checks out ci-recipes at its own commit", "ref: ${{ job.workflow_sha }}", ["jobs", "preview", "steps", "with"]],
+  ["setup-node caches what the caller says", "cache: ${{ inputs.node-cache }}", ["jobs", "preview", "steps", "with"]],
+  ["runs the pinned commit's action", "- uses: ./.ci-recipes/actions/pages-preview", ["jobs", "preview", "steps"]],
+];
+const TEARDOWN_RULES = [
+  ["called, never triggered", "workflow_call:", ["on"]],
+  ["a close joins its PR's preview group; the sweep its own",
+    "group: ${{ github.event_name == 'pull_request' && format('preview-{0}', github.event.pull_request.number) || 'preview-teardown-sweep' }}",
+    ["jobs", "teardown", "concurrency"]],
+  ["a close cancels a build in progress; the sweep is never cancelled",
+    "cancel-in-progress: ${{ github.event_name == 'pull_request' }}", ["jobs", "teardown", "concurrency"]],
+  ["close means pr, anything else sweep", "mode: ${{ github.event_name == 'pull_request' && 'pr' || 'sweep' }}", ["jobs", "teardown", "steps", "with"]],
+  ["checks out ci-recipes at its own commit", "ref: ${{ job.workflow_sha }}", ["jobs", "teardown", "steps", "with"]],
+  ["runs the pinned commit's action", "- uses: ./.ci-recipes/actions/pages-teardown", ["jobs", "teardown", "steps"]],
+];
+
+/** Every third-party `uses:` pinned to a 40-character SHA; local `./` paths must exist. */
+function unpinned(text) {
+  return text.split("\n").map((l) => l.trim()).filter((l) => /^(- )?uses: /.test(l))
+    .map((l) => l.replace(/^(- )?uses: /, "").replace(/\s+#.*$/, ""))
+    .filter((u) => (u.startsWith("./") ? !existsSync(root + u.slice(2).replace(/^\.ci-recipes\//, "")) : !/@[0-9a-f]{40}$/.test(u)));
+}
+
+/** The PINNED-CHECKOUT block, marker to marker. */
+const pinnedBlock = (text) => {
+  const a = text.indexOf("# PINNED-CHECKOUT:"), b = text.indexOf("# END PINNED-CHECKOUT");
+  return a < 0 || b < 0 ? null : text.slice(a, b);
+};
+
+test("pages-preview.yml carries every rule, where it belongs", () => {
+  assert.deepEqual(broken(read(PREVIEW), PREVIEW_RULES), []);
+});
+
+test("pages-teardown.yml carries every rule, where it belongs", () => {
+  assert.deepEqual(broken(read(TEARDOWN), TEARDOWN_RULES), []);
+});
+
+test("positive control: each rule's line, removed or moved under another key, is reported", () => {
+  for (const [file, rules] of [[PREVIEW, PREVIEW_RULES], [TEARDOWN, TEARDOWN_RULES]]) {
+    const text = read(file);
+    for (const [name, line] of rules) {
+      const removed = text.split("\n").filter((l) => l.trim() !== line).join("\n");
+      assert.deepEqual(broken(removed, rules), [name], `${file}: ${name} removed`);
+    }
+  }
+  // moved: the preview's concurrency lines under its permissions instead
+  const moved = read(PREVIEW).replace("    concurrency:\n", "    permissions-moved:\n");
+  assert.deepEqual(broken(moved, PREVIEW_RULES), ["one group per PR", "a newer push cancels"]);
+});
+
+test("the guard block is the same in both workflows, and refuses a non-SHA, another commit or a changed tree", () => {
+  const p = pinnedBlock(read(PREVIEW)), t = pinnedBlock(read(TEARDOWN));
+  assert.ok(p && t);
+  assert.equal(p, t);
+  assert.match(p, /\[\[ "\$WANT" =~ \^\[0-9a-f\]\{40\}\$ \]\] \|\|/);
+  assert.match(p, /\[ "\$got" = "\$WANT" \] \|\|/);
+  assert.match(p, /status --porcelain --ignored\)" \] \|\|/);
+  // positive control: a drifted copy differs
+  assert.notEqual(p, p.replace("--ignored", ""));
+});
+
+test("ci-recipes is checked out only after the build, right before the action that gets the token", () => {
+  const p = read(PREVIEW);
+  const at = (s) => { const i = p.indexOf(s); assert.ok(i >= 0, s); return i; };
+  const head = at("ref: ${{ github.event.pull_request.head.sha }}");
+  const build = at("- name: Build");
+  const pinned = at("# PINNED-CHECKOUT:");
+  const action = at("- uses: ./.ci-recipes/actions/pages-preview");
+  assert.ok(head < build && build < pinned && pinned < action, "head checkout, build, ci-recipes checkout, action");
+  // nothing runs between the guard and the action
+  assert.doesNotMatch(p.slice(p.indexOf("# END PINNED-CHECKOUT"), action), /run:|uses:/);
+});
+
+test("the preview refuses any event but pull_request, and a directory that would publish the checkout", () => {
+  const p = read(PREVIEW);
+  assert.match(p, /\[ "\$EVENT" = pull_request \] \|\| \{/);
+  assert.match(p, /case "\$DIRECTORY" in \.\|\.\/\|""\|\.ci-recipes\*\|\.\/\.ci-recipes\*\)/);
+  assert.ok(p.indexOf("Refuse a call this workflow cannot serve") < p.indexOf("- name: Build"));
+});
+
+test("every action used is pinned to a SHA, and every local one exists", () => {
+  for (const f of [PREVIEW, TEARDOWN]) assert.deepEqual(unpinned(read(f)), [], f);
+});
+
+test("positive control: a tag pin and a missing local action are reported", () => {
+  assert.deepEqual(unpinned("    - uses: actions/checkout@v4\n    - uses: ./actions/nope\n"),
+    ["actions/checkout@v4", "./actions/nope"]);
+});
+
+test("keyPaths: list items nest under their key, block scalars are skipped", () => {
+  const paths = keyPaths("jobs:\n  a:\n    steps:\n      - name: x\n        run: |\n          k: v\n        with:\n          ref: r\n");
+  assert.deepEqual(paths.find((l) => l.line === "ref: r").path, ["jobs", "a", "steps", "with"]);
+  assert.equal(paths.find((l) => l.line === "k: v"), undefined);
+});
+
+// ---- the caller templates /ci:init writes
+
+const TEMPLATES = ["templates/preview.yml", "templates/preview-teardown.yml"];
+
+test("templates call the reusable workflows, pinned by placeholder only", () => {
+  assert.deepEqual(broken(read(TEMPLATES[0]), [["call", "uses: TimZander/ci-recipes/.github/workflows/pages-preview.yml@__SHA__", ["jobs", "preview"]]]), []);
+  assert.deepEqual(broken(read(TEMPLATES[1]), [["call", "uses: TimZander/ci-recipes/.github/workflows/pages-teardown.yml@__SHA__", ["jobs", "teardown"]]]), []);
+});
+
+test("templates' comments hold no placeholder, so substitution cannot garble them", () => {
+  for (const f of TEMPLATES) {
+    const inComments = read(f).split("\n").filter((l) => l.trim().startsWith("#") && /__[A-Z]+__/.test(l));
+    assert.deepEqual(inComments, [], f);
+  }
+  assert.equal(["# Fill in: __PROJECT__"].filter((l) => /__[A-Z]+__/.test(l)).length, 1); // positive control
+});
+
+test("the teardown template runs on close, weekly and on demand", () => {
+  const t = read(TEMPLATES[1]);
+  assert.deepEqual(broken(t, [
+    ["close", "types: [closed]", ["on", "pull_request"]],
+    ["on demand", "workflow_dispatch:", ["on"]],
+  ]), []);
+  assert.match(t, /- cron: '\d{1,2} \d{1,2} \* \* [0-6]'/);
+});
+
+/** A rule a template must not hold: the reusable workflows own them (decision 0005). */
+const RULE_KEYS = /^\s*(concurrency|mode|if):/m;
+test("templates hold none of the rules the reusable workflows own", () => {
+  for (const f of TEMPLATES) assert.doesNotMatch(read(f), RULE_KEYS, f);
+  // positive control
+  assert.match("jobs:\n  preview:\n    if: github.event.pull_request.head.repo.full_name == github.repository\n", RULE_KEYS);
+});

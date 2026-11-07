@@ -1,10 +1,8 @@
-# Pull request previews on Cloudflare Pages, from TimZander/ci-recipes (STANDARD.md).
+# Pull request previews on Cloudflare Pages. The job is TimZander/ci-recipes'
+# pages-preview.yml, pinned to one commit; this file holds only the triggers, the build and
+# the secrets. Written by /ci:init; move the pin with /ci:update. See ci-recipes' STANDARD.md.
 #
-# Fill in: __PROJECT__ (the Pages project), __SHA__ (a ci-recipes commit), __WRANGLER__ (an
-# exact wrangler version), and the build steps. /ci:init does this for you.
-#
-# This job does NOT wait for the tests: a red test must not block UAT. Production deploys
-# from a separate workflow that does wait for them.
+# The preview never waits for the tests: a red test must not block UAT.
 name: Preview
 
 on:
@@ -12,35 +10,19 @@ on:
     types: [opened, synchronize, reopened]
     # Narrow with paths: when only part of the repository is the site.
 
-# One preview per PR; a newer push cancels the older run. Keyed on the PR number, not the
-# branch: branch names are not unique across forks.
-concurrency:
-  group: preview-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
-  pull-requests: write
-
 jobs:
   preview:
-    # Forks get no secrets; the action would skip, but skipping here bills no minute.
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          persist-credentials: false
-
-      # --- the repository's own build: whatever produces the directory below ---
-      - run: npm ci
-      - run: npm run build
-
-      - uses: TimZander/ci-recipes/actions/pages-preview@__SHA__
-        with:
-          project-name: __PROJECT__
-          directory: dist
-          wrangler-version: '__WRANGLER__'
-          api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    # The job (pages-preview.yml) skips a fork's pull request itself.
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: TimZander/ci-recipes/.github/workflows/pages-preview.yml@__SHA__
+    with:
+      project-name: __PROJECT__
+      directory: dist
+      wrangler-version: '__WRANGLER__'
+      node-version: '22'
+      build-command: npm ci && npm run build
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

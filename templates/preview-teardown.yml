@@ -1,11 +1,9 @@
-# Removes Cloudflare Pages previews, from TimZander/ci-recipes (STANDARD.md).
-#
-# Fill in: __PROJECT__ and __SHA__ (the same ci-recipes commit as preview.yml). /ci:init
-# does this for you.
+# Removes Cloudflare Pages previews. The job is TimZander/ci-recipes' pages-teardown.yml,
+# pinned to the same commit as preview.yml; this file holds only the triggers and the secrets.
+# Written by /ci:init; move the pin with /ci:update. See ci-recipes' STANDARD.md.
 #
 # Two triggers, because either alone leaks: closing a PR removes its pr-<number> previews,
-# and the weekly sweep removes whatever that missed (a failed run, a fork PR with no secrets,
-# previews deployed before the repository adopted pr-<number>).
+# and the weekly sweep removes whatever that missed.
 name: Preview teardown
 
 on:
@@ -16,23 +14,14 @@ on:
     - cron: '17 9 * * 1'
   workflow_dispatch:
 
-concurrency:
-  group: preview-teardown
-  cancel-in-progress: false
-
-permissions:
-  contents: read
-  pull-requests: write
-
 jobs:
   teardown:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: TimZander/ci-recipes/actions/pages-teardown@__SHA__
-        with:
-          project-name: __PROJECT__
-          mode: ${{ github.event_name == 'pull_request' && 'pr' || 'sweep' }}
-          api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: TimZander/ci-recipes/.github/workflows/pages-teardown.yml@__SHA__
+    with:
+      project-name: __PROJECT__
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
