@@ -12,8 +12,7 @@ on:
 
 jobs:
   preview:
-    # Forks get no secrets; skipping here bills no minute.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # The job (pages-preview.yml) skips a fork's pull request itself.
     permissions:
       contents: read
       pull-requests: write

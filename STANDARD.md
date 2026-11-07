@@ -20,6 +20,15 @@ wait for them. **Production deploys only after the tests pass.**
 - The preview workflow therefore holds the build and nothing else. It is not a gate: the
   tests are.
 
+- **A preview is built from the pull request's head commit**, the one its comment names, not
+  from GitHub's default merge with the base, which changes whenever the base moves.
+- **The build runs the pull request's own code, in the job that then deploys with the
+  Cloudflare token.** Only a same-repository pull request gets a preview, so its author can
+  already change the workflows; what the shared job guards against is the build's own
+  dependencies. Nothing of ci-recipes is on disk while the build runs: it is checked out
+  afterwards, verified against the pinned commit, and run straight away. A process the build
+  leaves running in the background could still interfere; keep the token's scope to Pages: Edit.
+
 ## 2. One name for a preview: `pr-<number>`
 
 Deploy a preview with `--branch=pr-<number>`, never the head branch name.

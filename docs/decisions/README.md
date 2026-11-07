@@ -10,3 +10,4 @@ an earlier one marks the old one superseded rather than editing it.
 | [0003](0003-previews-are-not-gated-by-tests.md) | Previews are not gated by tests; production is | accepted |
 | [0004](0004-pins-move-with-ci-update-not-dependabot.md) | Callers' pins move with `/ci:update`, not Dependabot | accepted |
 | [0005](0005-reusable-workflows-own-the-rules.md) | Callers reference reusable workflows; the rules live in ci-recipes once | accepted |
+| [0006](0006-previews-build-the-head-and-fetch-ci-recipes-after-the-build.md) | Previews build the PR head, and fetch ci-recipes only after the build | accepted |

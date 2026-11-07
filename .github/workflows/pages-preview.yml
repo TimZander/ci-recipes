@@ -21,7 +21,9 @@ on:
         type: string
         required: true
       directory:
-        description: The built output to deploy, relative to working-directory.
+        description: >-
+          The built output to deploy, relative to working-directory. Never `.`: the job checks
+          ci-recipes out into `.ci-recipes/`, which would be published with it.
         type: string
         required: true
       working-directory:
@@ -42,8 +44,12 @@ on:
         description: Set up this Node.js first, with npm caching. Empty for none.
         type: string
         default: ''
+      node-cache:
+        description: setup-node's package-manager cache (npm, yarn or pnpm); empty for none.
+        type: string
+        default: npm
       cache-dependency-path:
-        description: The lockfile npm's cache keys on, relative to the repository root.
+        description: The lockfile the cache keys on, relative to the repository root.
         type: string
         default: package-lock.json
       note:
@@ -62,8 +68,9 @@ on:
 
 jobs:
   preview:
-    # Forks get no secrets; skipping here bills no minute.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Forks get no secrets; skipping here bills no minute. Any event but pull_request still runs,
+    # so the first step can say what is wrong instead of a silent skip.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     # One preview per PR; a newer push cancels the run in progress. A close's teardown joins this
@@ -75,13 +82,42 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      - name: Refuse a call this workflow cannot serve
+        env:
+          EVENT: ${{ github.event_name }}
+          DIRECTORY: ${{ inputs.directory }}
+        run: |
+          set -euo pipefail
+          [ "$EVENT" = pull_request ] || { echo "::error::pages-preview.yml is called on pull_request only, not $EVENT (a preview from any other event could reach production)"; exit 1; }
+          case "$DIRECTORY" in .|./|""|.ci-recipes*|./.ci-recipes*) echo "::error::directory '$DIRECTORY' would publish the whole checkout or ci-recipes itself"; exit 1 ;; esac
+
+      # The PR's head commit, not the merge with the base the default checkout builds: the
+      # preview and its comment then name the same commit.
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      # This workflow's own commit, so its actions run at exactly the SHA the caller pinned.
-      # job.workflow_sha names the commit of the workflow defining this job (here, ci-recipes'),
-      # where github.workflow_sha would name the caller's.
+      - if: inputs.node-version != ''
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.node-cache }}
+          cache-dependency-path: ${{ inputs.cache-dependency-path }}
+
+      # The PR's own code and its dependencies run here, so nothing of ci-recipes is on disk yet:
+      # it is checked out, and checked, only after the build, right before it runs with the token.
+      - name: Build
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: bash -euo pipefail -c "$BUILD_COMMAND"
+
+      # PINNED-CHECKOUT: identical in pages-preview.yml and pages-teardown.yml (a test compares
+      # them). The actions run at exactly the commit the caller pinned: job.workflow_sha names
+      # the commit of the workflow defining this job (ci-recipes'), where github.workflow_sha
+      # would name the caller's. Refuses an empty or non-SHA value, another commit, or a tree
+      # that differs from that commit.
       - name: Check out ci-recipes at this workflow's commit
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -94,22 +130,11 @@ jobs:
           WANT: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
-          got=$(git -C .ci-recipes rev-parse HEAD)
           [[ "$WANT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is '$WANT', not a commit SHA"; exit 1; }
+          got=$(git -C .ci-recipes rev-parse HEAD)
           [ "$got" = "$WANT" ] || { echo "::error::ci-recipes checked out at $got, not $WANT"; exit 1; }
-
-      - if: inputs.node-version != ''
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: ${{ inputs.node-version }}
-          cache: npm
-          cache-dependency-path: ${{ inputs.cache-dependency-path }}
-
-      - name: Build
-        working-directory: ${{ inputs.working-directory }}
-        env:
-          BUILD_COMMAND: ${{ inputs.build-command }}
-        run: bash -euo pipefail -c "$BUILD_COMMAND"
+          [ -z "$(git -C .ci-recipes status --porcelain --ignored)" ] || { echo "::error::ci-recipes' tree differs from $WANT"; exit 1; }
+      # END PINNED-CHECKOUT
 
       - uses: ./.ci-recipes/actions/pages-preview
         with:

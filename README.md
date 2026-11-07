@@ -28,7 +28,7 @@ jobs:
       project-name: my-site
       directory: dist
       wrangler-version: '4.142.0'
-      node-version: '22'
+      node-version: '22'            # optional; node-cache defaults to npm
       build-command: npm ci && npm run build
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

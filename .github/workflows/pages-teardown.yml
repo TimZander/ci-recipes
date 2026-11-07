@@ -43,7 +43,11 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      # See pages-preview.yml: the actions run at exactly the commit the caller pinned.
+      # PINNED-CHECKOUT: identical in pages-preview.yml and pages-teardown.yml (a test compares
+      # them). The actions run at exactly the commit the caller pinned: job.workflow_sha names
+      # the commit of the workflow defining this job (ci-recipes'), where github.workflow_sha
+      # would name the caller's. Refuses an empty or non-SHA value, another commit, or a tree
+      # that differs from that commit.
       - name: Check out ci-recipes at this workflow's commit
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -56,9 +60,11 @@ jobs:
           WANT: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
-          got=$(git -C .ci-recipes rev-parse HEAD)
           [[ "$WANT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is '$WANT', not a commit SHA"; exit 1; }
+          got=$(git -C .ci-recipes rev-parse HEAD)
           [ "$got" = "$WANT" ] || { echo "::error::ci-recipes checked out at $got, not $WANT"; exit 1; }
+          [ -z "$(git -C .ci-recipes status --porcelain --ignored)" ] || { echo "::error::ci-recipes' tree differs from $WANT"; exit 1; }
+      # END PINNED-CHECKOUT
 
       - uses: ./.ci-recipes/actions/pages-teardown
         with:
