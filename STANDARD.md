@@ -91,8 +91,9 @@ The comment starts with `<!-- cf-preview-deploy -->` and is updated in place on 
 - Report a pull request's billed Actions minutes, alongside the agent's model spend, when
   it merges: `scripts/ci_minutes.py [--repo OWNER/NAME] <pr>...`. It rounds each job up to a
   whole minute, as GitHub bills them, and counts re-runs and the merge's deploy, but not
-  scheduled runs: a daily deploy on the default branch's tip was charged to the last merged
-  pull request (timzander.com #164, 23 minutes).
+  the runs a schedule or a dispatch starts on the merge commit later: a daily deploy on the
+  default branch's tip was charged to the last merged pull request (timzander.com #164, 23
+  minutes).
 - **Prefer fewer billed minutes over a shorter wait**, as painting decided (its decision
   0163), with one exception: the preview, where time to UAT wins (rule 1).
 - A `pull_request` path filter matches the whole pull request's diff and re-fires on every

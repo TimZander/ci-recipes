@@ -7,18 +7,19 @@ The repository is --repo, else $GITHUB_REPOSITORY, else the `origin` remote of t
 directory. First written for TimZander/AudioClassifier (its #1057, ADR 0522).
 
 For each PR it counts the Actions runs that belong to it (`runs_of_pr`): those on its head branch
-while it was open, the close-triggered ones at its final head, and the runs on its merge commit
-(the deploy), but never a scheduled run, which belongs to the schedule. A branch reused by several PRs no longer counts every PR's runs against each. Each run's jobs are fetched with `filter=all`, so re-run attempts count. A
-`pull_request_target` run such as sdd-checks also carries the PR's branch as `head_branch`, so it's
-included. One line per PR: runs, jobs, billed minutes, the unrounded minutes, and a split by
-workflow.
+while it was open, the close-triggered ones at its final head, and the runs its merge started on
+the merge commit (the deploy), but not a scheduled or dispatched run there. A branch reused by
+several PRs no longer counts every PR's runs against each. Each run's jobs are fetched with
+`filter=all`, so re-run attempts count. A `pull_request_target` run such as sdd-checks also
+carries the PR's branch as `head_branch`, so it's included. One line per PR: runs, jobs, billed
+minutes, the unrounded minutes, and a split by workflow.
 
 Billed minutes round EACH JOB up to a whole minute, as GitHub bills them (Linux at 1x: every job
 is assumed to run on ubuntu-latest, and other runners bill at other rates). Public repositories
 are not billed at all; the number is still what the PR would cost on a private one. The per-run
-`timing` endpoint would be simpler, but it returned `billable: 0` for AudioClassifier. The account's own usage endpoints are out of reach of a cloud
-session, which is scoped to repository endpoints. So this is a measure of what the PR spent, not
-a read of the invoice.
+`timing` endpoint would be simpler, but it returned `billable: 0` for AudioClassifier. The
+account's own usage endpoints are out of reach of a cloud session, which is scoped to repository
+endpoints. So this is a measure of what the PR spent, not a read of the invoice.
 
 The arithmetic is `billed_minutes`, a pure function tested in tests/test_ci_minutes.py.
 """
@@ -86,6 +87,10 @@ def _runs(repo, query):
             for r in page["workflow_runs"]}
 
 
+# Events that start a run on the merge commit long after the merge, not because of it.
+NOT_THE_MERGES = frozenset({"schedule", "workflow_dispatch", "repository_dispatch"})
+
+
 def runs_of_pr(pr, branch_runs, merge_runs):
     """The runs that belong to one pull request, in id order.
 
@@ -94,25 +99,25 @@ def runs_of_pr(pr, branch_runs, merge_runs):
     - runs on its branch created while it was open (from created_at to closed_at);
     - after it closed, only runs at its final head commit: the close-triggered teardown, not
       the next PR's pushes;
-    - runs on its merge commit (the deploy).
-    Runs from pushes before the PR was opened are not counted, nor are scheduled runs: a
-    daily deploy runs on the default branch's tip, which stays the last merged PR's merge
-    commit until the next merge, and is the schedule's cost, not that PR's.
+    - runs on its merge commit that the merge started (the deploy), and not those a schedule
+      or a dispatch started there later (NOT_THE_MERGES): the default branch's tip stays the
+      last merged PR's merge commit until the next merge, so a daily deploy or a manual
+      re-run lands on it, and is not that PR's cost. A `workflow_run` chained off the merge's
+      push is counted (one chained off a schedule would be too: its trigger is not on the run).
+    Runs from pushes before the PR was opened are not counted.
     """
     opened = _t(pr["created_at"])
     closed = _t(pr["closed_at"]) if pr.get("closed_at") else None
     head = pr["head"]["sha"]
     picked = {}
     for r in branch_runs:
-        if r.get("event") == "schedule":
-            continue
         at = _t(r["created_at"])
         if at < opened:
             continue
         if closed is None or at <= closed or r["head_sha"] == head:
             picked[r["id"]] = r
     for r in merge_runs:
-        if r.get("event") != "schedule":
+        if r.get("event") not in NOT_THE_MERGES:
             picked[r["id"]] = r
     return [picked[k] for k in sorted(picked)]
 

@@ -186,12 +186,51 @@ test("templates hold none of the rules the reusable workflows own", () => {
   assert.match("jobs:\n  preview:\n    if: github.event.pull_request.head.repo.full_name == github.repository\n", RULE_KEYS);
 });
 
-test("the preview comment runs after the deploy, and nothing in the action may fail quietly", () => {
+/** Fails a refused comment write quietly: the key as an indented line or a list item's first key. */
+const QUIET = /^\s*(- )?continue-on-error:/m;
+
+/** What is wrong with the comment step of an action.yml: it must run after the deploy, on the
+ *  same condition, with a run line that passes comment.mjs's exit code through unchanged. */
+function commentStepProblems(text) {
+  const steps = keyPaths(text).filter((l) => l.path.join(" > ").startsWith("runs > steps"));
+  const deploy = steps.findIndex((l) => l.line === "- id: deploy" && l.path.join(" > ") === "runs > steps");
+  const run = steps.findIndex((l) => l.line.startsWith("run:") && l.line.includes("comment.mjs"));
+  const problems = [];
+  if (deploy < 0) problems.push("no deploy step");
+  if (run < 0) problems.push("no comment step");
+  if (deploy >= 0 && run >= 0 && run < deploy) problems.push("comment before deploy");
+  if (run >= 0 && steps[run].line !== 'run: node "$GITHUB_ACTION_PATH/comment.mjs"') problems.push("run line changed");
+  if (run >= 0) {
+    let start = run;
+    while (start > 0 && !steps[start].line.startsWith("- ")) start--;
+    const ifs = steps.slice(start, run + 1).filter((l) => /^(- )?if:/.test(l.line));
+    if (ifs.length !== 1 || !ifs[0].line.endsWith("if: steps.guard.outputs.skipped == 'false'")) problems.push("condition changed");
+  }
+  if (QUIET.test(text)) problems.push("continue-on-error");
+  return problems;
+}
+
+test("the preview comment runs after the deploy, and a refused write fails the job", () => {
   const action = read("actions/pages-preview/action.yml");
-  const deploy = action.indexOf("- id: deploy");
-  const commentStep = action.indexOf('comment.mjs"');
-  assert.ok(deploy > 0 && commentStep > deploy, "the comment step follows the deploy");
-  assert.doesNotMatch(action, /^\s*continue-on-error:/m);
-  assert.doesNotMatch(read(".github/workflows/pages-preview.yml"), /^\s*continue-on-error:/m);
-  assert.match("      continue-on-error: true", /^\s*continue-on-error:/m); // positive control
+  assert.deepEqual(commentStepProblems(action), []);
+  assert.doesNotMatch(read(PREVIEW), QUIET);
+});
+
+test("positive control: each way of hiding a refused comment write is reported", () => {
+  const action = read("actions/pages-preview/action.yml");
+  const runLine = 'run: node "$GITHUB_ACTION_PATH/comment.mjs"';
+  const guardIf = "- if: steps.guard.outputs.skipped == 'false'\n      shell: bash\n      env:\n        GITHUB_TOKEN";
+  assert.ok(action.includes(runLine) && action.includes(guardIf), "the fixtures below still match action.yml");
+  const cases = {
+    "run line changed": action.replace(runLine, runLine + " || true"),
+    "condition changed": action.replace(guardIf, guardIf.replace("- if: steps.guard.outputs.skipped == 'false'", "- if: always()")),
+    "continue-on-error": action.replace(guardIf, guardIf.replace("      shell: bash", "      continue-on-error: true\n      shell: bash")),
+  };
+  for (const [problem, text] of Object.entries(cases)) assert.ok(commentStepProblems(text).includes(problem), problem);
+  // the comment step moved above the deploy, with a comment line naming the deploy left on top
+  const commentStep = action.slice(action.indexOf(guardIf), action.indexOf(runLine) + runLine.length);
+  const moved = action.replace(commentStep, "").replace("    - id: deploy", "    # - id: deploy\n    " + commentStep + "\n\n    - id: deploy");
+  assert.ok(commentStepProblems(moved).includes("comment before deploy"));
+  assert.match("    - continue-on-error: true", QUIET);
+  assert.match("      continue-on-error: true", QUIET);
 });
