@@ -2,13 +2,15 @@
 # pinned to the same commit as preview.yml; this file holds only the triggers and the secrets.
 # Written by /ci:init; move the pin with /ci:update. See ci-recipes' STANDARD.md.
 #
-# Two triggers, because either alone leaks: closing a PR removes its pr-<number> previews,
-# and the weekly sweep removes whatever that missed.
+# Closing a PR removes its pr-<number> previews, deleting a preview/** branch removes its
+# pv-<hash> previews (the delete of any other branch is skipped and bills nothing), and the
+# weekly sweep removes whatever those missed. Any one alone leaks.
 name: Preview teardown
 
 on:
   pull_request:
     types: [closed]
+  delete:
   schedule:
     # Off the hour on purpose: GitHub drops scheduled runs at :00 under load.
     - cron: '17 9 * * 1'

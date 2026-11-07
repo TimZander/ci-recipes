@@ -7,6 +7,10 @@ import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { MARKER, BOT } from "../actions/pages-preview/comment.mjs";
+import { previewAlias } from "../actions/pages-branch-preview/alias.mjs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const REPO = "o/r";
@@ -48,6 +52,18 @@ function fakeApi(state) {
       }
       if (req.method === "GET" && path === `/repos/${REPO}/pulls/7`) return send(200, { state: state.prState });
       if (req.method === "GET" && path === `/repos/${REPO}/pulls`) return send(200, paged(state.openPrs));
+      // Branches: state.refs names the ones that exist
+      const ref = path.match(new RegExp(`^/repos/${REPO}/git/ref/heads/(.+)$`));
+      if (req.method === "GET" && ref) {
+        const b = ref[1].split("/").map(decodeURIComponent).join("/");
+        return (state.refs ?? []).includes(b) ? send(200, { ref: `refs/heads/${b}` }) : send(404, { message: "Not Found" });
+      }
+      if (req.method === "GET" && path === `/repos/${REPO}/git/matching-refs/heads/preview/`) {
+        if (state.failRefs) return send(state.failRefs, { message: "nope" });
+        const all = (state.refs ?? []).filter((b) => b.startsWith("preview/")).map((b) => ({ ref: `refs/heads/${b}` }));
+        if (state.refsIgnorePaging) return send(200, all);
+        return send(200, paged((state.refs ?? []).filter((b) => b.startsWith("preview/")).map((b) => ({ ref: `refs/heads/${b}` }))));
+      }
       // Cloudflare: pages of 25, like the real API; an empty page ends the list
       const cf = `/accounts/${ACCOUNT}/pages/projects/${PROJECT}`;
       if (req.method === "GET" && path === cf) return send(200, { success: true, result: { production_branch: "main" } });
@@ -191,4 +207,131 @@ test("teardown: a failed delete exits non-zero and leaves the comment alone", as
     assert.notEqual(r.code, 0);
     assert.match(state.comments[0].body, /Preview ready/);
   } finally { await api.close(); }
+});
+
+test("teardown branch: deletes the deleted preview branch's previews only", async () => {
+  const mine = previewAlias("preview/7-proto"), other = previewAlias("preview/8-proto");
+  const state = { deployments: [dep(mine), dep(mine), dep(other), dep("pr-7")], refs: ["preview/8-proto"], comments: [] };
+  const api = await fakeApi(state);
+  try {
+    const r = await teardown(api, { MODE: "branch", BRANCH: "preview/7-proto" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(state.deployments.map((d) => d.deployment_trigger.metadata.branch), [other, "pr-7"]);
+  } finally { await api.close(); }
+});
+
+test("teardown branch: a branch pushed again keeps its preview", async () => {
+  const mine = previewAlias("preview/7-proto");
+  const state = { deployments: [dep(mine)], refs: ["preview/7-proto"], comments: [] };
+  const api = await fakeApi(state);
+  try {
+    const r = await teardown(api, { MODE: "branch", BRANCH: "preview/7-proto" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /exists again/);
+    assert.equal(state.deployments.length, 1);
+  } finally { await api.close(); }
+});
+
+test("teardown branch: another branch's delete deletes nothing; no branch at all is an error", async () => {
+  const state = { deployments: [dep("main"), dep("pr-1")], refs: [], comments: [] };
+  const api = await fakeApi(state);
+  try {
+    // GitHub's startsWith() ignores case, so the job's if: lets Preview/x through: nothing to do
+    for (const BRANCH of ["main", "branches/4-x", "Preview/x", "PREVIEW/x"]) {
+      const r = await teardown(api, { MODE: "branch", BRANCH });
+      assert.equal(r.code, 0, BRANCH);
+      assert.match(r.stdout, /not a preview branch: nothing to delete/, BRANCH);
+    }
+    const r = await teardown(api, { MODE: "branch", BRANCH: "" });
+    assert.notEqual(r.code, 0, "an empty branch is a caller mistake");
+    assert.equal(state.deployments.length, 2);
+    assert.ok(!api.log.some((l) => l.startsWith("DELETE")));
+  } finally { await api.close(); }
+});
+
+test("teardown sweep: keeps an existing preview branch's preview, removes a deleted one's", async () => {
+  const live = previewAlias("preview/live"), gone = previewAlias("preview/gone");
+  const state = { deployments: [dep(live), dep(gone)], refs: ["preview/live", "main"], openPrs: [], comments: [] };
+  const api = await fakeApi(state);
+  try {
+    const r = await teardown(api, { MODE: "sweep" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(state.deployments.map((d) => d.deployment_trigger.metadata.branch), [live]);
+  } finally { await api.close(); }
+});
+
+const scratch = () => mkdtempSync(join(tmpdir(), "ci-recipes-"));
+
+test("the bash name the workflow computes before the build equals alias.mjs's", async () => {
+  const wf = readFileSync(join(root, ".github/workflows/pages-branch-preview.yml"), "utf8");
+  const line = wf.split("\n").find((l) => l.includes("sha256sum"));
+  assert.ok(line, "the workflow computes the name with sha256sum");
+  const cmd = line.trim().replace(/^alias=/, "");
+  for (const BRANCH of ["preview/7-proto", "preview/a/b-c_d.e", "preview/x`y"]) {
+    const got = await new Promise((resolve) => execFile("bash", ["-c", `set -euo pipefail; echo ${cmd}`],
+      { env: { PATH: process.env.PATH, BRANCH } }, (err, stdout) => resolve(err ? `error ${err.message}` : stdout.trim())));
+    assert.equal(got, previewAlias(BRANCH), BRANCH);
+  }
+});
+
+test("alias script: writes the branch's pv- name to GITHUB_OUTPUT, refuses main", async () => {
+  const out = join(scratch(), "out");
+  writeFileSync(out, "");
+  const ok = await run("actions/pages-branch-preview/alias.mjs", { BRANCH: "preview/7-proto", GITHUB_OUTPUT: out });
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.equal(readFileSync(out, "utf8"), `alias=${previewAlias("preview/7-proto")}\n`);
+  for (const BRANCH of ["main", "", "preview/"]) {
+    const bad = await run("actions/pages-branch-preview/alias.mjs", { BRANCH, GITHUB_OUTPUT: out });
+    assert.notEqual(bad.code, 0, BRANCH);
+  }
+  assert.equal(readFileSync(out, "utf8").split("\n").filter(Boolean).length, 1, "nothing written on a refusal");
+});
+
+test("summary script: one stable preview-url line, and the links in the step summary", async () => {
+  const summary = join(scratch(), "summary");
+  writeFileSync(summary, "");
+  const r = await run("actions/pages-branch-preview/summary.mjs", {
+    DEPLOYMENT_URL: "https://abc.proj.pages.dev", ALIAS_URL: "https://pv-1.proj.pages.dev",
+    BRANCH: "preview/7-proto", HEAD_SHA: "abcdef0123", GITHUB_STEP_SUMMARY: summary,
+  });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout.split("\n").filter((l) => l.startsWith("preview-url: ")).length, 1);
+  assert.match(r.stdout, /^preview-url: https:\/\/abc\.proj\.pages\.dev$/m);
+  const body = readFileSync(summary, "utf8");
+  assert.match(body, /Stable link .*https:\/\/pv-1\.proj/);
+  assert.match(body, /This commit: https:\/\/abc\.proj/);
+  // a branch name shows as plain text: no markup gets through
+  const odd = join(scratch(), "odd");
+  writeFileSync(odd, "");
+  await run("actions/pages-branch-preview/summary.mjs", {
+    DEPLOYMENT_URL: "https://abc.proj.pages.dev", BRANCH: "preview/x`<img/src=//e.example>(y)", GITHUB_STEP_SUMMARY: odd,
+  });
+  assert.doesNotMatch(readFileSync(odd, "utf8"), /[<>]|`.*`.*`/);
+  const none = await run("actions/pages-branch-preview/summary.mjs", { DEPLOYMENT_URL: "", BRANCH: "preview/x" });
+  assert.notEqual(none.code, 0, "no URL: no summary that says ready");
+});
+
+test("teardown sweep: a listing that ignores paging is read once, not 50 times", async () => {
+  const branches = Array.from({ length: 120 }, (_, i) => `preview/p${i}`);
+  const state = { deployments: branches.map((b) => dep(previewAlias(b))), refs: branches, openPrs: [], comments: [], refsIgnorePaging: true };
+  const api = await fakeApi(state);
+  try {
+    const r = await teardown(api, { MODE: "sweep" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(state.deployments.length, 120, "every live branch kept");
+    assert.ok(api.log.filter((l) => l.includes("matching-refs")).length <= 2, "stops when a page adds nothing");
+  } finally { await api.close(); }
+});
+
+test("teardown sweep: a failed preview-branch listing deletes nothing", async () => {
+  for (const failRefs of [404, 500]) {
+    const state = { deployments: [dep(previewAlias("preview/live")), dep("stray")], refs: ["preview/live"], openPrs: [], comments: [], failRefs };
+    const api = await fakeApi(state);
+    try {
+      const r = await teardown(api, { MODE: "sweep" });
+      assert.notEqual(r.code, 0, String(failRefs));
+      assert.equal(state.deployments.length, 2, String(failRefs));
+      assert.ok(!api.log.some((l) => l.startsWith("DELETE")), String(failRefs));
+    } finally { await api.close(); }
+  }
 });

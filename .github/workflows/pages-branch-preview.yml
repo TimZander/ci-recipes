@@ -1,0 +1,161 @@
+# Reusable: the preview-only route. A push to a preview/** branch deploys a Cloudflare Pages
+# preview under pv-<hash of the branch>, with no pull request and no tests: a throwaway
+# prototype for a phone UAT (STANDARD.md, "The preview-only route"; decision 0008).
+#
+# A caller references this whole job, pinned to the same commit as its teardown:
+#
+#   on:
+#     push: { branches: ['preview/**'] }
+#   jobs:
+#     preview:
+#       uses: TimZander/ci-recipes/.github/workflows/pages-branch-preview.yml@<sha>
+#       with: { project-name: ..., directory: dist, wrangler-version: '4.142.0', build-command: npm ci && npm run build }
+#       secrets: { CLOUDFLARE_API_TOKEN: ..., CLOUDFLARE_ACCOUNT_ID: ... }
+#
+# Its URL goes to the step summary and to a `preview-url:` line of the job's log. Deleting the
+# branch deletes the preview (pages-teardown.yml on the delete event).
+name: Pages branch preview
+
+on:
+  workflow_call:
+    inputs:
+      project-name:
+        description: The Cloudflare Pages project.
+        type: string
+        required: true
+      directory:
+        description: >-
+          The built output to deploy, relative to working-directory. Never `.`: the job checks
+          ci-recipes out into `.ci-recipes/`, which would be published with it.
+        type: string
+        required: true
+      working-directory:
+        description: >-
+          Where the build command and wrangler run. Keep it the folder that holds a Pages
+          functions/ directory, if the project has one.
+        type: string
+        default: .
+      wrangler-version:
+        description: An exact wrangler version, never a range.
+        type: string
+        required: true
+      build-command:
+        description: A bash command that builds the site into directory, run in working-directory.
+        type: string
+        required: true
+      node-version:
+        description: Set up this Node.js first, with npm caching. Empty for none.
+        type: string
+        default: ''
+      node-cache:
+        description: setup-node's package-manager cache (npm, yarn or pnpm); empty for none.
+        type: string
+        default: npm
+      cache-dependency-path:
+        description: The lockfile the cache keys on, relative to the repository root.
+        type: string
+        default: package-lock.json
+      note:
+        description: An optional line for the summary.
+        type: string
+        default: ''
+      timeout-minutes:
+        description: The job's limit, build included.
+        type: number
+        default: 10
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
+
+jobs:
+  preview:
+    # A branch's delete can also arrive as a push with deleted set: never a preview run, and it
+    # must not take the branch's group from the teardown.
+    if: github.event.deleted != true
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # One preview per branch; a newer push cancels the run in progress. The branch's delete
+    # joins this group too (pages-teardown.yml), cancelling a build that would otherwise deploy
+    # after the teardown.
+    concurrency:
+      group: preview-branch-${{ github.ref_name }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      # Also fixes the preview's name, pv-<hash> (alias.mjs computes the same; a test compares
+      # them), before any of the branch's code runs: nothing the build does can change it.
+      - name: Refuse a call this workflow cannot serve
+        id: refuse
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BRANCH: ${{ github.ref_name }}
+          DIRECTORY: ${{ inputs.directory }}
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          [ "$EVENT" = push ] || { echo "::error::pages-branch-preview.yml is called on push only, not $EVENT"; exit 1; }
+          case "$REF" in refs/heads/preview/?*) ;; *) echo "::error::pages-branch-preview.yml serves preview/** branches only, not $REF (a push to any other branch could reach production)"; exit 1 ;; esac
+          case "$DIRECTORY" in .|./|""|.ci-recipes*|./.ci-recipes*|/*|..|../*|*/..|*/../*) echo "::error::directory '$DIRECTORY' would publish the whole checkout, ci-recipes itself or something outside working-directory"; exit 1 ;; esac
+          case "$WORKDIR" in /*|..|../*|*/..|*/../*) echo "::error::working-directory '$WORKDIR' is outside the checkout"; exit 1 ;; esac
+          alias=pv-$(printf %s "$BRANCH" | sha256sum | cut -c1-12)
+          echo "alias=$alias" >> "$GITHUB_OUTPUT"
+
+      # The pushed commit, the one the summary names.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - if: inputs.node-version != ''
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.node-cache }}
+          cache-dependency-path: ${{ inputs.cache-dependency-path }}
+
+      # The branch's own code and its dependencies run here, so nothing of ci-recipes is on disk
+      # yet: it is checked out, and checked, only after the build, right before it runs with the
+      # token (decision 0006).
+      - name: Build
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: bash -euo pipefail -c "$BUILD_COMMAND"
+
+      # PINNED-CHECKOUT: identical in pages-preview.yml, pages-branch-preview.yml and
+      # pages-teardown.yml (a test compares them). The actions run at exactly the commit the caller pinned: job.workflow_sha names
+      # the commit of the workflow defining this job (ci-recipes'), where github.workflow_sha
+      # would name the caller's. Refuses an empty or non-SHA value, another commit, or a tree
+      # that differs from that commit.
+      - name: Check out ci-recipes at this workflow's commit
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          repository: TimZander/ci-recipes
+          ref: ${{ job.workflow_sha }}
+          path: .ci-recipes
+          persist-credentials: false
+      - name: Refuse anything but the pinned commit
+        env:
+          WANT: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$WANT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is '$WANT', not a commit SHA"; exit 1; }
+          got=$(git -C .ci-recipes rev-parse HEAD)
+          [ "$got" = "$WANT" ] || { echo "::error::ci-recipes checked out at $got, not $WANT"; exit 1; }
+          [ -z "$(git -C .ci-recipes status --porcelain --ignored)" ] || { echo "::error::ci-recipes' tree differs from $WANT"; exit 1; }
+      # END PINNED-CHECKOUT
+
+      - uses: ./.ci-recipes/actions/pages-branch-preview
+        with:
+          project-name: ${{ inputs.project-name }}
+          directory: ${{ inputs.directory }}
+          working-directory: ${{ inputs.working-directory }}
+          wrangler-version: ${{ inputs.wrangler-version }}
+          alias: ${{ steps.refuse.outputs.alias }}
+          note: ${{ inputs.note }}
+          api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

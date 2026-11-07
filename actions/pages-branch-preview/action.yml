@@ -1,0 +1,87 @@
+name: Cloudflare Pages branch preview
+description: >-
+  Deploy a built directory as a Cloudflare Pages preview of a preview/** branch, under
+  pv-<hash of the branch>, with no pull request: its URL goes to the step summary and to one
+  preview-url line of the log (STANDARD.md, "The preview-only route").
+
+inputs:
+  project-name:
+    description: The Cloudflare Pages project.
+    required: true
+  directory:
+    description: The built output to deploy, relative to working-directory.
+    required: true
+  working-directory:
+    description: >-
+      Where wrangler runs. Keep it the directory that holds a Pages `functions/` folder, if
+      the project has one: wrangler picks functions up from its working directory.
+    default: .
+  wrangler-version:
+    description: An exact wrangler version (for example 4.142.0), never a range.
+    required: true
+  api-token:
+    description: secrets.CLOUDFLARE_API_TOKEN (Pages - Edit).
+    required: true
+  account-id:
+    description: secrets.CLOUDFLARE_ACCOUNT_ID.
+    required: true
+  alias:
+    description: >-
+      The preview's name, pv-<the first 12 hex digits of the branch's sha256> (alias.mjs).
+      Compute it before the build, so the build cannot change it; pages-branch-preview.yml does.
+    required: true
+  note:
+    description: An optional line for the summary.
+    default: ''
+
+outputs:
+  deployment-url:
+    description: This commit's preview URL.
+    value: ${{ steps.deploy.outputs.deployment-url }}
+  alias-url:
+    description: The pv-<hash> alias, stable across pushes.
+    value: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+
+runs:
+  using: composite
+  steps:
+    # A push to a preview/** branch only: any other event or branch is a caller mistake, and a
+    # push to main must never reach a preview deploy.
+    - shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        REF: ${{ github.ref }}
+      run: |
+        set -euo pipefail
+        [ "$EVENT" = push ] || { echo "::error::pages-branch-preview runs on push only (got $EVENT)"; exit 1; }
+        case "$REF" in refs/heads/preview/?*) ;; *)
+          echo "::error::pages-branch-preview runs on preview/** branches only (got $REF)"; exit 1 ;;
+        esac
+
+    # The name comes in from before the build; here only its shape is checked, in bash, so no
+    # interpreter the build could have replaced names the deploy. LOAD-BEARING: the teardown
+    # computes the same pv-<hash> (alias.mjs) to find what to delete.
+    - shell: bash
+      env:
+        ALIAS: ${{ inputs.alias }}
+      run: |
+        [[ "$ALIAS" =~ ^pv-[0-9a-f]{12}$ ]] || { echo "::error::alias '$ALIAS' is not pv-<12 hex digits>"; exit 1; }
+
+    - id: deploy
+      uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+      with:
+        apiToken: ${{ inputs.api-token }}
+        accountId: ${{ inputs.account-id }}
+        workingDirectory: ${{ inputs.working-directory }}
+        wranglerVersion: ${{ inputs.wrangler-version }}
+        packageManager: npm
+        command: pages deploy ${{ inputs.directory }} --project-name=${{ inputs.project-name }} --branch=${{ inputs.alias }}
+
+    - shell: bash
+      env:
+        DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        ALIAS_URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+        BRANCH: ${{ github.ref_name }}
+        HEAD_SHA: ${{ github.sha }}
+        NOTE: ${{ inputs.note }}
+      run: node "$GITHUB_ACTION_PATH/summary.mjs"

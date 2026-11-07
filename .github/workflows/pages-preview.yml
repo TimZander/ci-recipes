@@ -86,10 +86,12 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           DIRECTORY: ${{ inputs.directory }}
+          WORKDIR: ${{ inputs.working-directory }}
         run: |
           set -euo pipefail
           [ "$EVENT" = pull_request ] || { echo "::error::pages-preview.yml is called on pull_request only, not $EVENT (a preview from any other event could reach production)"; exit 1; }
-          case "$DIRECTORY" in .|./|""|.ci-recipes*|./.ci-recipes*) echo "::error::directory '$DIRECTORY' would publish the whole checkout or ci-recipes itself"; exit 1 ;; esac
+          case "$DIRECTORY" in .|./|""|.ci-recipes*|./.ci-recipes*|/*|..|../*|*/..|*/../*) echo "::error::directory '$DIRECTORY' would publish the whole checkout, ci-recipes itself or something outside working-directory"; exit 1 ;; esac
+          case "$WORKDIR" in /*|..|../*|*/..|*/../*) echo "::error::working-directory '$WORKDIR' is outside the checkout"; exit 1 ;; esac
 
       # The PR's head commit, not the merge with the base the default checkout builds: the
       # preview and its comment then name the same commit.
@@ -113,8 +115,8 @@ jobs:
           BUILD_COMMAND: ${{ inputs.build-command }}
         run: bash -euo pipefail -c "$BUILD_COMMAND"
 
-      # PINNED-CHECKOUT: identical in pages-preview.yml and pages-teardown.yml (a test compares
-      # them). The actions run at exactly the commit the caller pinned: job.workflow_sha names
+      # PINNED-CHECKOUT: identical in pages-preview.yml, pages-branch-preview.yml and
+      # pages-teardown.yml (a test compares them). The actions run at exactly the commit the caller pinned: job.workflow_sha names
       # the commit of the workflow defining this job (ci-recipes'), where github.workflow_sha
       # would name the caller's. Refuses an empty or non-SHA value, another commit, or a tree
       # that differs from that commit.

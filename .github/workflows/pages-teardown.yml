@@ -1,9 +1,11 @@
 # Reusable: delete Cloudflare Pages previews (STANDARD.md, rule 4). Called on pull_request
-# closed it removes that PR's pr-<number> previews; called on a schedule or by hand it sweeps
-# every preview no open pull request claims. Production is never deleted.
+# closed it removes that PR's pr-<number> previews; on the delete of a preview/** branch, that
+# branch's pv-<hash> previews; on a schedule or by hand it sweeps every preview no open pull
+# request and no existing preview/** branch claims. Production is never deleted.
 #
 #   on:
 #     pull_request: { types: [closed] }
+#     delete:
 #     schedule: [{ cron: '17 9 * * 1' }]
 #     workflow_dispatch:
 #   jobs:
@@ -28,23 +30,27 @@ on:
 
 jobs:
   teardown:
-    # A fork's PR never had a preview (no secrets), and its close has no secrets either.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # A fork's PR never had a preview (no secrets), and its close has no secrets either. The
+    # delete of anything but a preview/** branch is skipped here, billing nothing.
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      && (github.event_name != 'delete' || (github.event.ref_type == 'branch' && startsWith(github.event.ref, 'preview/')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # A close tears down in its PR's own preview group (pages-preview.yml's), cancelling a
     # preview still building so it cannot deploy after the teardown, and never queueing behind
     # another PR's close, where GitHub would drop all but one pending run. The sweep has its
-    # own group and is never cancelled. (First found by garmin-map's conformance review.)
+    # own group and is never cancelled. (First found by garmin-map's conformance review.) A
+    # preview branch's delete joins that branch's group (pages-branch-preview.yml's) the same way.
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && format('preview-{0}', github.event.pull_request.number) || 'preview-teardown-sweep' }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+      group: ${{ github.event_name == 'pull_request' && format('preview-{0}', github.event.pull_request.number) || github.event_name == 'delete' && format('preview-branch-{0}', github.event.ref) || 'preview-teardown-sweep' }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'delete' }}
     permissions:
       contents: read
       pull-requests: write
     steps:
-      # PINNED-CHECKOUT: identical in pages-preview.yml and pages-teardown.yml (a test compares
-      # them). The actions run at exactly the commit the caller pinned: job.workflow_sha names
+      # PINNED-CHECKOUT: identical in pages-preview.yml, pages-branch-preview.yml and
+      # pages-teardown.yml (a test compares them). The actions run at exactly the commit the caller pinned: job.workflow_sha names
       # the commit of the workflow defining this job (ci-recipes'), where github.workflow_sha
       # would name the caller's. Refuses an empty or non-SHA value, another commit, or a tree
       # that differs from that commit.
@@ -69,6 +75,6 @@ jobs:
       - uses: ./.ci-recipes/actions/pages-teardown
         with:
           project-name: ${{ inputs.project-name }}
-          mode: ${{ github.event_name == 'pull_request' && 'pr' || 'sweep' }}
+          mode: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'delete' && 'branch' || 'sweep' }}
           api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

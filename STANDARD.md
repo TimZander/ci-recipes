@@ -27,7 +27,8 @@ wait for them. **Production deploys only after the tests pass.**
   already change the workflows; what the shared job guards against is the build's own
   dependencies. Nothing of ci-recipes is on disk while the build runs: it is checked out
   afterwards, verified against the pinned commit, and run straight away. A process the build
-  leaves running in the background could still interfere; keep the token's scope to Pages: Edit.
+  leaves running in the background, or what it writes to `$GITHUB_PATH` or `$GITHUB_ENV` for
+  later steps, could still interfere; keep the token's scope to Pages: Edit.
 
 ## 2. One name for a preview: `pr-<number>`
 
@@ -38,6 +39,10 @@ Deploy a preview with `--branch=pr-<number>`, never the head branch name.
 - A head branch named `main` would deploy to production.
 - The teardown matches on this exact value. It is written in one place,
   `actions/pages-preview`, so the two cannot drift.
+- A `preview/**` branch has no pull request, so its preview is
+  **`pv-<the first 12 hex digits of the branch name's sha256>`** (rule 8). It is short, can
+  never be `main` or `pr-<n>`, and is computed in one place, `actions/pages-branch-preview/alias.mjs`,
+  which the teardown imports.
 
 ## 3. One preview comment
 
@@ -54,6 +59,9 @@ The comment starts with `<!-- cf-preview-deploy -->` and is updated in place on 
 - An optional note line carries anything repository-specific ("public maps only").
 - The same text goes into the job's step summary.
 - When the pull request closes, the teardown edits it to say the preview is gone.
+- A `preview/**` branch has no pull request to comment on (rule 8): its URL goes to the job's
+  step summary, and to one line of the job's log that starts `preview-url: `, which an agent
+  reads through the API.
 
 ## 4. Teardown on close, plus a sweep
 
@@ -62,8 +70,13 @@ The comment starts with `<!-- cf-preview-deploy -->` and is updated in place on 
   a preview still building (which would otherwise deploy after it), and closes never queue
   behind each other, where GitHub keeps one pending run per group and drops the rest
   (garmin-map's conformance review).
+- **On a `preview/**` branch's delete:** delete that branch's `pv-<hash>` previews, unless the
+  branch exists again. The delete runs in the branch's preview group, as a close does. The
+  delete of any other branch is skipped by the job's `if:` and bills nothing.
 - **Weekly sweep:** delete every preview no open pull request claims, either as
-  `pr-<number>` or as its head branch. The sweep is what catches a failed teardown, a fork's
+  `pr-<number>` or as its head branch, and no existing `preview/**` branch claims as its
+  `pv-<hash>`. A preview branch's preview never expires while the branch exists (decision
+  0008). If the branches can't be listed, the sweep deletes nothing. The sweep is what catches a failed teardown, a fork's
   pull request, and previews from before a repository adopted `pr-<number>`. AudioClassifier
   had 82 stale previews before its teardown was found never to have worked.
 - Production is never deleted. Two guards hold this independently: the environment must be
@@ -143,6 +156,33 @@ The comment starts with `<!-- cf-preview-deploy -->` and is updated in place on 
   it bills nothing.
 - Keep `working-directory` on the folder that holds a Pages `functions/` directory, if there
   is one: wrangler picks up Functions from where it runs (garmin-map's CalTopo relay).
+
+## 8. The preview-only route: a push to `preview/**`
+
+A throwaway prototype for a phone UAT needs a preview and nothing else. A push to a branch
+matching `preview/**` deploys one (`pages-branch-preview.yml`) and runs no tests. With no pull
+request there is nothing to merge. AudioClassifier's #1119, a do-not-merge draft PR opened only
+for a prototype's preview, billed 45 minutes over 12 runs, 4 of them the preview; its "do not
+merge" protection was the title alone (ci-recipes#4, decision 0008).
+
+- The preview is `pv-<hash>` (rule 2), and its URL is in the step summary and the
+  `preview-url:` log line (rule 3).
+- Deleting the branch deletes the preview; the sweep keeps it while the branch exists (rule 4).
+- The workflow and its action both refuse any event but `push` and any ref but
+  `refs/heads/preview/…`. That catches a caller wired to the wrong trigger. It is not a
+  boundary against someone with push access: they can push a `preview/**` branch whose own
+  caller workflow does anything the repository's secrets allow, as a pull request's author
+  can. What limits them is the token's scope (rule 1).
+- Its name is fixed before the build, in bash, and only its shape is checked after it, so
+  the build cannot rename the deploy, to `main` for one. The build's dependencies can still
+  reach the deploy step through what the runner carries between steps (`$GITHUB_PATH`,
+  `$GITHUB_ENV`), as on a pull request.
+- It is built from the pushed commit, with the same order as a pull request's preview: the
+  build first, then ci-recipes checked out at the pinned commit, then the deploy (rule 1).
+- A repository whose other workflows run on every push runs them on a `preview/**` push too;
+  the route saves their minutes only where they run on `pull_request` and on `main`.
+- `preview/**` is not a work branch. A prototype that becomes work starts again on the
+  repository's own branch naming, as a pull request.
 
 ## What stays in each repository
 

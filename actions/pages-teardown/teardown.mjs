@@ -1,7 +1,8 @@
 // Deletes Cloudflare Pages preview deployments that no open pull request claims.
 //
 //   MODE=pr PR_NUMBER=<n>  a closed pull request's pr-<n> previews, then marks its comment
-//   MODE=sweep             every preview whose branch no open pull request claims
+//   MODE=branch BRANCH=<b> a deleted preview/** branch's pv-<hash> previews
+//   MODE=sweep             every preview no open pull request and no preview/** branch claims
 //
 // Ported from painting's scripts/preview-teardown.sh, the most careful of the four copies:
 // every page is listed before anything is deleted (deleting while paging shifts pages and
@@ -10,10 +11,11 @@
 // deleted, never the production branch, whatever it is named.
 //
 // Pure parts are exported for tests/; main() runs only when this file is executed.
-// Reads: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, PROJECT_NAME, MODE, PR_NUMBER,
+// Reads: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, PROJECT_NAME, MODE, PR_NUMBER, BRANCH,
 //        GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL, and CLOUDFLARE_API_URL (tests only).
 import { pathToFileURL } from "node:url";
 import { MARKER, findOwnComment } from "../pages-preview/comment.mjs";
+import { previewAlias, isPreviewBranch, PREVIEW_PREFIX } from "../pages-branch-preview/alias.mjs";
 
 const ID = /^[0-9a-f][0-9a-f-]{7,63}$/;
 const MAX_PAGES = 100;
@@ -32,12 +34,13 @@ export function branchOf(d) {
  *  - Only environment "preview", and never the production branch: two guards, so renaming
  *    the production branch cannot make production a target.
  *  - pr mode: exactly pr-<n>.
+ *  - branch mode: exactly the deleted preview branch's pv-<hash>.
  *  - sweep: any preview whose branch is not claimed by an open PR, either as pr-<n> or as
  *    that PR's head branch (repos that deployed under head branches before adopting pr-<n>
- *    keep their open PRs' previews). A missing branch is kept: deleting on missing
- *    metadata would be guessing.
+ *    keep their open PRs' previews), nor by a preview/** branch that still exists, as its
+ *    pv-<hash>. A missing branch is kept: deleting on missing metadata would be guessing.
  */
-export function selectTargets({ deployments, mode, prNumber, openPrs = [], productionBranch }) {
+export function selectTargets({ deployments, mode, prNumber, branch, openPrs = [], previewBranches = [], productionBranch }) {
   if (!productionBranch) throw new Error("selectTargets: productionBranch is required");
   for (const d of deployments) {
     if (!isDeploymentId(d?.id)) throw new Error(`unexpected deployment id: ${JSON.stringify(d?.id)}`);
@@ -47,8 +50,12 @@ export function selectTargets({ deployments, mode, prNumber, openPrs = [], produ
     if (!/^[1-9][0-9]*$/.test(String(prNumber))) throw new Error("pr mode needs a PR number");
     const mine = `pr-${prNumber}`;
     keep = (b) => b !== mine;
+  } else if (mode === "branch") {
+    const mine = previewAlias(branch);
+    keep = (b) => b !== mine;
   } else if (mode === "sweep") {
     const claimed = new Set(openPrs.flatMap((p) => [`pr-${p.number}`, p.headRef].filter(Boolean)));
+    for (const b of previewBranches) if (isPreviewBranch(b)) claimed.add(previewAlias(b));
     keep = (b) => b === "" || claimed.has(b);
   } else {
     throw new Error(`unknown mode: ${mode}`);
@@ -116,7 +123,17 @@ async function main() {
   if (!complete) throw new Error(`no empty page after ${MAX_PAGES} pages; deployments may remain`);
 
   let openPrs = [];
-  if (e.MODE === "pr") {
+  const previewBranches = [];
+  if (e.MODE === "branch") {
+    // GitHub's startsWith() ignores case, so the job's if: lets Preview/x through: not ours.
+    if (!e.BRANCH) throw new Error("branch mode needs BRANCH");
+    if (!isPreviewBranch(e.BRANCH)) { console.log(`${e.BRANCH} is not a preview branch: nothing to delete`); return; }
+    // A branch pushed again since its delete keeps its preview.
+    const ref = e.BRANCH.split("/").map(encodeURIComponent).join("/");
+    const r = await ghCall(`/git/ref/heads/${ref}`);
+    if (r.ok) { console.log(`${e.BRANCH} exists again: nothing deleted`); return; }
+    if (r.status !== 404) throw new Error(`reading branch ${e.BRANCH} failed: HTTP ${r.status}`);
+  } else if (e.MODE === "pr") {
     // A pull request reopened since its close keeps its preview.
     const pr = await ghCall(`/pulls/${e.PR_NUMBER}`);
     if (!pr.ok) throw new Error(`reading pull request ${e.PR_NUMBER} failed: HTTP ${pr.status}`);
@@ -131,10 +148,23 @@ async function main() {
       openPrs.push(...r.json.map((p) => ({ number: p.number, headRef: p.head?.ref })));
       if (r.json.length < 100) break;
     }
+    // The preview branches that still exist keep their previews. No match is an empty list;
+    // anything but a list stops the sweep before a delete, since treating it as empty would
+    // delete every live branch preview. The endpoint may ignore paging and answer the whole
+    // list each time, so a page that adds nothing new ends it.
+    const seenRefs = new Set();
+    for (let page = 1; page <= 50; page++) {
+      const r = await ghCall(`/git/matching-refs/heads/${PREVIEW_PREFIX}?per_page=100&page=${page}`);
+      if (!r.ok || !Array.isArray(r.json)) throw new Error(`listing preview branches failed: HTTP ${r.status}`);
+      const before = seenRefs.size;
+      for (const x of r.json) seenRefs.add(String(x.ref).replace(/^refs\/heads\//, ""));
+      if (r.json.length < 100 || seenRefs.size === before) break;
+    }
+    previewBranches.push(...seenRefs);
   }
 
   const targets = selectTargets({
-    deployments, mode: e.MODE, prNumber: e.PR_NUMBER, openPrs, productionBranch,
+    deployments, mode: e.MODE, prNumber: e.PR_NUMBER, branch: e.BRANCH, openPrs, previewBranches, productionBranch,
   });
   let deleted = 0, failed = 0;
   for (const t of targets) {

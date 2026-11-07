@@ -11,6 +11,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (p) => readFileSync(root + p, "utf8");
 const PREVIEW = ".github/workflows/pages-preview.yml";
 const TEARDOWN = ".github/workflows/pages-teardown.yml";
+const BRANCH_PREVIEW = ".github/workflows/pages-branch-preview.yml";
 
 /**
  * The key path of every non-comment line, from indentation: `jobs > preview > concurrency` for
@@ -63,14 +64,25 @@ const PREVIEW_RULES = [
 ];
 const TEARDOWN_RULES = [
   ["called, never triggered", "workflow_call:", ["on"]],
-  ["a close joins its PR's preview group; the sweep its own",
-    "group: ${{ github.event_name == 'pull_request' && format('preview-{0}', github.event.pull_request.number) || 'preview-teardown-sweep' }}",
+  ["a close joins its PR's preview group, a branch delete its branch's; the sweep its own",
+    "group: ${{ github.event_name == 'pull_request' && format('preview-{0}', github.event.pull_request.number) || github.event_name == 'delete' && format('preview-branch-{0}', github.event.ref) || 'preview-teardown-sweep' }}",
     ["jobs", "teardown", "concurrency"]],
-  ["a close cancels a build in progress; the sweep is never cancelled",
-    "cancel-in-progress: ${{ github.event_name == 'pull_request' }}", ["jobs", "teardown", "concurrency"]],
-  ["close means pr, anything else sweep", "mode: ${{ github.event_name == 'pull_request' && 'pr' || 'sweep' }}", ["jobs", "teardown", "steps", "with"]],
+  ["a close or a delete cancels a build in progress; the sweep is never cancelled",
+    "cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'delete' }}", ["jobs", "teardown", "concurrency"]],
+  ["close means pr, delete means branch, anything else sweep",
+    "mode: ${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'delete' && 'branch' || 'sweep' }}", ["jobs", "teardown", "steps", "with"]],
   ["checks out ci-recipes at its own commit", "ref: ${{ job.workflow_sha }}", ["jobs", "teardown", "steps", "with"]],
   ["runs the pinned commit's action", "- uses: ./.ci-recipes/actions/pages-teardown", ["jobs", "teardown", "steps"]],
+];
+
+const BRANCH_PREVIEW_RULES = [
+  ["called, never triggered", "workflow_call:", ["on"]],
+  ["one group per branch, the one its delete joins", "group: preview-branch-${{ github.ref_name }}", ["jobs", "preview", "concurrency"]],
+  ["a newer push cancels", "cancel-in-progress: true", ["jobs", "preview", "concurrency"]],
+  ["reads the repository, writes nothing", "contents: read", ["jobs", "preview", "permissions"]],
+  ["builds the pushed commit", "ref: ${{ github.sha }}", ["jobs", "preview", "steps", "with"]],
+  ["checks out ci-recipes at its own commit", "ref: ${{ job.workflow_sha }}", ["jobs", "preview", "steps", "with"]],
+  ["runs the pinned commit's action", "- uses: ./.ci-recipes/actions/pages-branch-preview", ["jobs", "preview", "steps"]],
 ];
 
 /** Every third-party `uses:` pinned to a 40-character SHA; local `./` paths must exist. */
@@ -94,8 +106,14 @@ test("pages-teardown.yml carries every rule, where it belongs", () => {
   assert.deepEqual(broken(read(TEARDOWN), TEARDOWN_RULES), []);
 });
 
+test("pages-branch-preview.yml carries every rule, where it belongs", () => {
+  assert.deepEqual(broken(read(BRANCH_PREVIEW), BRANCH_PREVIEW_RULES), []);
+  // a branch preview never asks to write pull requests: it has none
+  assert.doesNotMatch(read(BRANCH_PREVIEW), /pull-requests:/);
+});
+
 test("positive control: each rule's line, removed or moved under another key, is reported", () => {
-  for (const [file, rules] of [[PREVIEW, PREVIEW_RULES], [TEARDOWN, TEARDOWN_RULES]]) {
+  for (const [file, rules] of [[PREVIEW, PREVIEW_RULES], [TEARDOWN, TEARDOWN_RULES], [BRANCH_PREVIEW, BRANCH_PREVIEW_RULES]]) {
     const text = read(file);
     for (const [name, line] of rules) {
       const removed = text.split("\n").filter((l) => l.trim() !== line).join("\n");
@@ -107,15 +125,56 @@ test("positive control: each rule's line, removed or moved under another key, is
   assert.deepEqual(broken(moved, PREVIEW_RULES), ["one group per PR", "a newer push cancels"]);
 });
 
-test("the guard block is the same in both workflows, and refuses a non-SHA, another commit or a changed tree", () => {
-  const p = pinnedBlock(read(PREVIEW)), t = pinnedBlock(read(TEARDOWN));
-  assert.ok(p && t);
+test("the guard block is the same in every workflow, and refuses a non-SHA, another commit or a changed tree", () => {
+  const p = pinnedBlock(read(PREVIEW)), t = pinnedBlock(read(TEARDOWN)), b = pinnedBlock(read(BRANCH_PREVIEW));
+  assert.ok(p && t && b);
   assert.equal(p, t);
+  assert.equal(p, b);
   assert.match(p, /\[\[ "\$WANT" =~ \^\[0-9a-f\]\{40\}\$ \]\] \|\|/);
   assert.match(p, /\[ "\$got" = "\$WANT" \] \|\|/);
   assert.match(p, /status --porcelain --ignored\)" \] \|\|/);
   // positive control: a drifted copy differs
   assert.notEqual(p, p.replace("--ignored", ""));
+});
+
+for (const [file, checkout, action] of [
+  [BRANCH_PREVIEW, "ref: ${{ github.sha }}", "- uses: ./.ci-recipes/actions/pages-branch-preview"],
+]) {
+  test(`${file}: ci-recipes is checked out only after the build, right before the action`, () => {
+    const p = read(file);
+    const at = (s) => { const i = p.indexOf(s); assert.ok(i >= 0, s); return i; };
+    const order = [at(checkout), at("- name: Build"), at("# PINNED-CHECKOUT:"), at(action)];
+    assert.deepEqual([...order].sort((x, y) => x - y), order, "checkout, build, ci-recipes checkout, action");
+    assert.doesNotMatch(p.slice(p.indexOf("# END PINNED-CHECKOUT"), order[3]), /run:|uses:/);
+  });
+}
+
+test("the branch preview refuses any event but push, any branch but preview/**, and a directory that would publish the checkout", () => {
+  const p = read(BRANCH_PREVIEW);
+  assert.match(p, /\[ "\$EVENT" = push \] \|\| \{/);
+  assert.match(p, /case "\$REF" in refs\/heads\/preview\/\?\*\) ;; \*\)/);
+  assert.match(p, /case "\$DIRECTORY" in \.\|\.\/\|""\|\.ci-recipes\*\|\.\/\.ci-recipes\*/);
+  assert.ok(p.indexOf("Refuse a call this workflow cannot serve") < p.indexOf("- name: Build"));
+  // the action refuses the same, so the deploy cannot be reached around the workflow
+  const a = read("actions/pages-branch-preview/action.yml");
+  assert.match(a, /\[ "\$EVENT" = push \] \|\|/);
+  assert.match(a, /case "\$REF" in refs\/heads\/preview\/\?\*\) ;; \*\)/);
+  assert.ok(a.indexOf('case "$REF"') < a.indexOf("- id: deploy"), "refused before the deploy");
+  // the name is fixed before the build, and the action checks its shape before the deploy
+  assert.ok(p.indexOf("sha256sum") < p.indexOf("- name: Build"), "the name is computed before the build");
+  assert.match(p, /alias: \$\{\{ steps\.refuse\.outputs\.alias \}\}/);
+  assert.match(a, /\[\[ "\$ALIAS" =~ \^pv-\[0-9a-f\]\{12\}\$ \]\] \|\|/);
+  assert.ok(a.indexOf('"$ALIAS" =~') < a.indexOf("- id: deploy"), "checked before the deploy");
+  assert.match(a, /--branch=\$\{\{ inputs\.alias \}\}/);
+  assert.doesNotMatch(a, /run: node .*alias\.mjs/, "no interpreter runs between the build and the deploy to name it");
+  assert.match('      run: node "$GITHUB_ACTION_PATH/alias.mjs"', /run: node .*alias\.mjs/); // positive control
+  // a branch's delete is never a preview run
+  assert.match(p, /^    if: github\.event\.deleted != true$/m);
+});
+
+test("the teardown skips the delete of anything but a preview/** branch", () => {
+  const t = read(TEARDOWN);
+  assert.match(t, /\(github\.event_name != 'delete' \|\| \(github\.event\.ref_type == 'branch' && startsWith\(github\.event\.ref, 'preview\/'\)\)\)/);
 });
 
 test("ci-recipes is checked out only after the build, right before the action that gets the token", () => {
@@ -133,12 +192,35 @@ test("ci-recipes is checked out only after the build, right before the action th
 test("the preview refuses any event but pull_request, and a directory that would publish the checkout", () => {
   const p = read(PREVIEW);
   assert.match(p, /\[ "\$EVENT" = pull_request \] \|\| \{/);
-  assert.match(p, /case "\$DIRECTORY" in \.\|\.\/\|""\|\.ci-recipes\*\|\.\/\.ci-recipes\*\)/);
+  assert.match(p, /case "\$DIRECTORY" in \.\|\.\/\|""\|\.ci-recipes\*\|\.\/\.ci-recipes\*/);
   assert.ok(p.indexOf("Refuse a call this workflow cannot serve") < p.indexOf("- name: Build"));
 });
 
+/** The refuse step's directory check, run in bash as the workflow runs it. */
+async function directoryRefused(file, DIRECTORY) {
+  const p = read(file);
+  const lines = p.split("\n").filter((l) => /case "\$(DIRECTORY|WORKDIR)" in/.test(l)).map((l) => l.trim());
+  assert.ok(lines.length >= 2, `${file}: directory and working-directory checks`);
+  const { execFile } = await import("node:child_process");
+  return new Promise((resolve) => execFile("bash", ["-c", `set -euo pipefail\n${lines.join("\n")}`],
+    { env: { PATH: process.env.PATH, DIRECTORY, WORKDIR: "." } }, (err) => resolve(Boolean(err))));
+}
+test("both previews refuse a directory outside the build: the checkout, a parent, an absolute path", async () => {
+  for (const file of [PREVIEW, BRANCH_PREVIEW]) {
+    for (const d of [".", "./", "", "..", "../x", "dist/..", "dist/../..", "/etc", ".ci-recipes", "./.ci-recipes/x"]) {
+      assert.equal(await directoryRefused(file, d), true, `${file}: ${JSON.stringify(d)}`);
+    }
+    for (const d of ["dist", "build/site", "./dist", "out.d"]) {
+      assert.equal(await directoryRefused(file, d), false, `${file}: ${d} is allowed`); // positive control
+    }
+  }
+});
+
 test("every action used is pinned to a SHA, and every local one exists", () => {
-  for (const f of [PREVIEW, TEARDOWN]) assert.deepEqual(unpinned(read(f)), [], f);
+  for (const f of [PREVIEW, TEARDOWN, BRANCH_PREVIEW, "actions/pages-preview/action.yml",
+    "actions/pages-branch-preview/action.yml", "actions/pages-teardown/action.yml"]) {
+    assert.deepEqual(unpinned(read(f)), [], f);
+  }
 });
 
 test("positive control: a tag pin and a missing local action are reported", () => {
@@ -154,11 +236,12 @@ test("keyPaths: list items nest under their key, block scalars are skipped", () 
 
 // ---- the caller templates /ci:init writes
 
-const TEMPLATES = ["templates/preview.yml", "templates/preview-teardown.yml"];
+const TEMPLATES = ["templates/preview.yml", "templates/preview-teardown.yml", "templates/branch-preview.yml"];
 
 test("templates call the reusable workflows, pinned by placeholder only", () => {
   assert.deepEqual(broken(read(TEMPLATES[0]), [["call", "uses: TimZander/ci-recipes/.github/workflows/pages-preview.yml@__SHA__", ["jobs", "preview"]]]), []);
   assert.deepEqual(broken(read(TEMPLATES[1]), [["call", "uses: TimZander/ci-recipes/.github/workflows/pages-teardown.yml@__SHA__", ["jobs", "teardown"]]]), []);
+  assert.deepEqual(broken(read(TEMPLATES[2]), [["call", "uses: TimZander/ci-recipes/.github/workflows/pages-branch-preview.yml@__SHA__", ["jobs", "preview"]]]), []);
 });
 
 test("templates' comments hold no placeholder, so substitution cannot garble them", () => {
@@ -169,10 +252,21 @@ test("templates' comments hold no placeholder, so substitution cannot garble the
   assert.equal(["# Fill in: __PROJECT__"].filter((l) => /__[A-Z]+__/.test(l)).length, 1); // positive control
 });
 
-test("the teardown template runs on close, weekly and on demand", () => {
+test("the branch preview template runs on a push to preview/** only, never on a pull request", () => {
+  const t = read(TEMPLATES[2]);
+  assert.deepEqual(broken(t, [["preview branches", "branches: ['preview/**']", ["on", "push"]]]), []);
+  const triggers = keyPaths(t).filter((l) => l.path.join(" > ") === "on").map((l) => l.line);
+  assert.deepEqual(triggers, ["push:"]);
+  // positive control: a pull_request trigger beside it is seen
+  const both = t.replace("on:\n", "on:\n  pull_request:\n");
+  assert.deepEqual(keyPaths(both).filter((l) => l.path.join(" > ") === "on").map((l) => l.line), ["pull_request:", "push:"]);
+});
+
+test("the teardown template runs on close, on a branch delete, weekly and on demand", () => {
   const t = read(TEMPLATES[1]);
   assert.deepEqual(broken(t, [
     ["close", "types: [closed]", ["on", "pull_request"]],
+    ["branch delete", "delete:", ["on"]],
     ["on demand", "workflow_dispatch:", ["on"]],
   ]), []);
   assert.match(t, /- cron: '\d{1,2} \d{1,2} \* \* [0-6]'/);
