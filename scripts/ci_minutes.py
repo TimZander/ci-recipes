@@ -8,7 +8,7 @@ directory. First written for TimZander/AudioClassifier (its #1057, ADR 0522).
 
 For each PR it counts the Actions runs that belong to it (`runs_of_pr`): those on its head branch
 while it was open, the close-triggered ones at its final head, and the runs on its merge commit
-(the deploy). A branch reused by several PRs no longer counts every PR's runs against each. Each run's jobs are fetched with `filter=all`, so re-run attempts count. A
+(the deploy), but never a scheduled run, which belongs to the schedule. A branch reused by several PRs no longer counts every PR's runs against each. Each run's jobs are fetched with `filter=all`, so re-run attempts count. A
 `pull_request_target` run such as sdd-checks also carries the PR's branch as `head_branch`, so it's
 included. One line per PR: runs, jobs, billed minutes, the unrounded minutes, and a split by
 workflow.
@@ -95,20 +95,25 @@ def runs_of_pr(pr, branch_runs, merge_runs):
     - after it closed, only runs at its final head commit: the close-triggered teardown, not
       the next PR's pushes;
     - runs on its merge commit (the deploy).
-    Runs from pushes before the PR was opened are not counted.
+    Runs from pushes before the PR was opened are not counted, nor are scheduled runs: a
+    daily deploy runs on the default branch's tip, which stays the last merged PR's merge
+    commit until the next merge, and is the schedule's cost, not that PR's.
     """
     opened = _t(pr["created_at"])
     closed = _t(pr["closed_at"]) if pr.get("closed_at") else None
     head = pr["head"]["sha"]
     picked = {}
     for r in branch_runs:
+        if r.get("event") == "schedule":
+            continue
         at = _t(r["created_at"])
         if at < opened:
             continue
         if closed is None or at <= closed or r["head_sha"] == head:
             picked[r["id"]] = r
     for r in merge_runs:
-        picked[r["id"]] = r
+        if r.get("event") != "schedule":
+            picked[r["id"]] = r
     return [picked[k] for k in sorted(picked)]
 
 

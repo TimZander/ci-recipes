@@ -185,3 +185,13 @@ test("templates hold none of the rules the reusable workflows own", () => {
   // positive control
   assert.match("jobs:\n  preview:\n    if: github.event.pull_request.head.repo.full_name == github.repository\n", RULE_KEYS);
 });
+
+test("the preview comment runs after the deploy, and nothing in the action may fail quietly", () => {
+  const action = read("actions/pages-preview/action.yml");
+  const deploy = action.indexOf("- id: deploy");
+  const commentStep = action.indexOf('comment.mjs"');
+  assert.ok(deploy > 0 && commentStep > deploy, "the comment step follows the deploy");
+  assert.doesNotMatch(action, /^\s*continue-on-error:/m);
+  assert.doesNotMatch(read(".github/workflows/pages-preview.yml"), /^\s*continue-on-error:/m);
+  assert.match("      continue-on-error: true", /^\s*continue-on-error:/m); // positive control
+});
