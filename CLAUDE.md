@@ -7,7 +7,10 @@ This repository doesn't use spec-driven development (sdd).
 ## What this is
 
 Shared CI for the owner's repositories. **[STANDARD.md](STANDARD.md) is the contract**:
-it says what callers' CI does, and the code in `actions/` carries it out. Change the two
+it says what callers' CI does, and the reusable workflows in `.github/workflows/pages-*.yml`
+and the `actions/` they run carry it out. A rule goes in a reusable workflow, never in a
+template: a template is copied into every repository, which is the drift this repository
+exists to remove (decision 0005). Change the two
 together, in one pull request. Decisions go in `docs/decisions/` as MADR records, the next
 free number, indexed in `docs/decisions/README.md`.
 
@@ -22,8 +25,8 @@ outside the owner's business hours, unless the owner says otherwise.
 - **Never push to `main`, never force-push, never `--amend`.** Branches are
   `branches/<slug>`, or `branches/<issue>-<slug>` for a tracked issue.
 - **Callers pin a SHA**, so every merge to `main` is something a caller may pin. Never
-  change an action's inputs or outputs incompatibly: add a new input with a default, or a
-  new action.
+  change a reusable workflow's or an action's inputs or outputs incompatibly: add a new input
+  with a default, or a new workflow.
 - **Standard library only.** The actions run on the runner's own `node` (and the
   minutes tool on `python3`) with nothing installed. No `package.json`, no pip.
 - **Pin third-party actions by SHA**, with the version in a comment.
