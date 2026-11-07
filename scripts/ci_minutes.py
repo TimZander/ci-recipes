@@ -6,8 +6,9 @@ Usage: ci_minutes.py [--repo OWNER/NAME] <pr-number>...   (needs `gh`, authorise
 The repository is --repo, else $GITHUB_REPOSITORY, else the `origin` remote of the current
 directory. First written for TimZander/AudioClassifier (its #1057, ADR 0522).
 
-For each PR it counts every Actions run on the PR's head branch, plus the runs on its merge commit
-(the deploy). Each run's jobs are fetched with `filter=all`, so re-run attempts count. A
+For each PR it counts the Actions runs that belong to it (`runs_of_pr`): those on its head branch
+while it was open, the close-triggered ones at its final head, and the runs on its merge commit
+(the deploy). A branch reused by several PRs no longer counts every PR's runs against each. Each run's jobs are fetched with `filter=all`, so re-run attempts count. A
 `pull_request_target` run such as sdd-checks also carries the PR's branch as `head_branch`, so it's
 included. One line per PR: runs, jobs, billed minutes, the unrounded minutes, and a split by
 workflow.
@@ -85,11 +86,39 @@ def _runs(repo, query):
             for r in page["workflow_runs"]}
 
 
+def runs_of_pr(pr, branch_runs, merge_runs):
+    """The runs that belong to one pull request, in id order.
+
+    A branch can carry several PRs one after another (a cloud agent's work branch does), so
+    "every run on the head branch" counts each PR's runs against all of them. A PR owns:
+    - runs on its branch created while it was open (from created_at to closed_at);
+    - after it closed, only runs at its final head commit: the close-triggered teardown, not
+      the next PR's pushes;
+    - runs on its merge commit (the deploy).
+    Runs from pushes before the PR was opened are not counted.
+    """
+    opened = _t(pr["created_at"])
+    closed = _t(pr["closed_at"]) if pr.get("closed_at") else None
+    head = pr["head"]["sha"]
+    picked = {}
+    for r in branch_runs:
+        at = _t(r["created_at"])
+        if at < opened:
+            continue
+        if closed is None or at <= closed or r["head_sha"] == head:
+            picked[r["id"]] = r
+    for r in merge_runs:
+        picked[r["id"]] = r
+    return [picked[k] for k in sorted(picked)]
+
+
 def pr_report(repo, pr):
     p = _api(f"repos/{repo}/pulls/{pr}")[0]
-    runs = _runs(repo, f"branch={p['head']['ref']}")
+    branch_runs = list(_runs(repo, f"branch={p['head']['ref']}").values())
+    merge_runs = []
     if p.get("merged_at") and p.get("merge_commit_sha"):
-        runs.update(_runs(repo, f"head_sha={p['merge_commit_sha']}"))
+        merge_runs = list(_runs(repo, f"head_sha={p['merge_commit_sha']}").values())
+    runs = {r["id"]: r for r in runs_of_pr(p, branch_runs, merge_runs)}
     by_wf, all_jobs = {}, []
     for rid, run in runs.items():
         jobs = [j for page in _api(f"repos/{repo}/actions/runs/{rid}/jobs?filter=all&per_page=100")
