@@ -187,5 +187,7 @@ merge" protection was the title alone (ci-recipes#4, decision 0008).
 ## What stays in each repository
 
 Each repository keeps its own build steps, test jobs, smoke tests and deploy checks; those
-differ too much to share. A repository's CLAUDE.md points here, and its adoption is
+differ too much to share. A preview's build is its `build-command`, never added steps; a build
+that downloads large pinned files caches them with `cache-path` and `cache-key` (decision
+0009). A repository's CLAUDE.md points here, and its adoption is
 recorded in its own decision record.

@@ -37,6 +37,12 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 ```
 
+A build that downloads large pinned files can cache them: set `cache-path` (one path per line,
+relative to the repository root) and `cache-key` together, and the preview restores them before
+the build and saves them after it (decision 0009). A pull request restores the default branch's
+cache, so save the same paths under the same key on the default branch, in the production
+deploy, for every pull request to hit it.
+
 `templates/` has the three callers in full. The actions under `actions/` still work as steps on
 their own, but a caller that uses them directly takes on the concurrency and guards itself.
 Everything runs on the runner's own Node.js, with nothing to install. The caller needs the repository secrets `CLOUDFLARE_API_TOKEN` (Pages: Edit) and

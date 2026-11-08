@@ -52,6 +52,19 @@ on:
         description: The lockfile the cache keys on, relative to the repository root.
         type: string
         default: package-lock.json
+      cache-path:
+        description: >-
+          Files the build downloads and can reuse, one path per line, relative to the repository
+          root: restored before the build and saved when the job ends (actions/cache). Empty for
+          none. Set it together with cache-key.
+        type: string
+        default: ''
+      cache-key:
+        description: >-
+          The cache's key. Change it whenever what cache-path holds should change, such as a
+          pinned model or runtime version.
+        type: string
+        default: ''
       note:
         description: An optional line for the comment.
         type: string
@@ -87,11 +100,14 @@ jobs:
           EVENT: ${{ github.event_name }}
           DIRECTORY: ${{ inputs.directory }}
           WORKDIR: ${{ inputs.working-directory }}
+          CACHE_PATH: ${{ inputs.cache-path }}
+          CACHE_KEY: ${{ inputs.cache-key }}
         run: |
           set -euo pipefail
           [ "$EVENT" = pull_request ] || { echo "::error::pages-preview.yml is called on pull_request only, not $EVENT (a preview from any other event could reach production)"; exit 1; }
           case "$DIRECTORY" in .|./|""|.ci-recipes*|./.ci-recipes*|/*|..|../*|*/..|*/../*) echo "::error::directory '$DIRECTORY' would publish the whole checkout, ci-recipes itself or something outside working-directory"; exit 1 ;; esac
           case "$WORKDIR" in /*|..|../*|*/..|*/../*) echo "::error::working-directory '$WORKDIR' is outside the checkout"; exit 1 ;; esac
+          if { [ -n "$CACHE_PATH" ] && [ -z "$CACHE_KEY" ]; } || { [ -z "$CACHE_PATH" ] && [ -n "$CACHE_KEY" ]; }; then echo "::error::cache-path and cache-key are set together or not at all"; exit 1; fi
 
       # The PR's head commit, not the merge with the base the default checkout builds: the
       # preview and its comment then name the same commit.
@@ -106,6 +122,15 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: ${{ inputs.node-cache }}
           cache-dependency-path: ${{ inputs.cache-dependency-path }}
+
+      # The caller's downloads (cache-path), restored before the build and saved when the job
+      # ends. A run reads the default branch's cache, and saves only into its own branch's or pull
+      # request's scope, so nothing it builds can change what the default branch restores.
+      - if: inputs.cache-path != ''
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ inputs.cache-path }}
+          key: ${{ inputs.cache-key }}
 
       # The PR's own code and its dependencies run here, so nothing of ci-recipes is on disk yet:
       # it is checked out, and checked, only after the build, right before it runs with the token.

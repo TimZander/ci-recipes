@@ -13,3 +13,4 @@ an earlier one marks the old one superseded rather than editing it.
 | [0006](0006-previews-build-the-head-and-fetch-ci-recipes-after-the-build.md) | Previews build the PR head, and fetch ci-recipes only after the build | accepted |
 | [0007](0007-a-workflow-skips-only-paths-it-never-reads.md) | A workflow skips a pull request only when it changes nothing that workflow reads | accepted |
 | [0008](0008-a-preview-only-route-on-preview-branches.md) | A preview-only route: a push to `preview/**` deploys a preview, with no pull request | accepted |
+| [0009](0009-previews-cache-a-callers-downloads.md) | Previews can cache a caller's downloads, with `cache-path` and `cache-key` | accepted |

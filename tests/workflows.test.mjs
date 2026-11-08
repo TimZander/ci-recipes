@@ -60,6 +60,7 @@ const PREVIEW_RULES = [
   ["builds the PR's head commit", "ref: ${{ github.event.pull_request.head.sha }}", ["jobs", "preview", "steps", "with"]],
   ["checks out ci-recipes at its own commit", "ref: ${{ job.workflow_sha }}", ["jobs", "preview", "steps", "with"]],
   ["setup-node caches what the caller says", "cache: ${{ inputs.node-cache }}", ["jobs", "preview", "steps", "with"]],
+  ["restores the caller's cache under its key", "key: ${{ inputs.cache-key }}", ["jobs", "preview", "steps", "with"]],
   ["runs the pinned commit's action", "- uses: ./.ci-recipes/actions/pages-preview", ["jobs", "preview", "steps"]],
 ];
 const TEARDOWN_RULES = [
@@ -81,6 +82,7 @@ const BRANCH_PREVIEW_RULES = [
   ["a newer push cancels", "cancel-in-progress: true", ["jobs", "preview", "concurrency"]],
   ["reads the repository, writes nothing", "contents: read", ["jobs", "preview", "permissions"]],
   ["builds the pushed commit", "ref: ${{ github.sha }}", ["jobs", "preview", "steps", "with"]],
+  ["restores the caller's cache under its key", "key: ${{ inputs.cache-key }}", ["jobs", "preview", "steps", "with"]],
   ["checks out ci-recipes at its own commit", "ref: ${{ job.workflow_sha }}", ["jobs", "preview", "steps", "with"]],
   ["runs the pinned commit's action", "- uses: ./.ci-recipes/actions/pages-branch-preview", ["jobs", "preview", "steps"]],
 ];
@@ -213,6 +215,37 @@ test("both previews refuse a directory outside the build: the checkout, a parent
     for (const d of ["dist", "build/site", "./dist", "out.d"]) {
       assert.equal(await directoryRefused(file, d), false, `${file}: ${d} is allowed`); // positive control
     }
+  }
+});
+
+/** The refuse step's cache check, run in bash as the workflow runs it. */
+async function cacheRefused(text, CACHE_PATH, CACHE_KEY) {
+  const lines = text.split("\n").filter((l) => /CACHE_PATH" \]/.test(l)).map((l) => l.trim());
+  assert.equal(lines.length, 1, "one cache check in the refuse step");
+  const { execFile } = await import("node:child_process");
+  return new Promise((resolve) => execFile("bash", ["-c", `set -euo pipefail\n${lines[0]}`],
+    { env: { PATH: process.env.PATH, CACHE_PATH, CACHE_KEY } }, (err) => resolve(Boolean(err))));
+}
+const cacheCases = async (text) => Promise.all([["p", ""], ["", "k"], ["", ""], ["p\nq", "k"]]
+  .map(([p, k]) => cacheRefused(text, p, k)));
+test("both previews refuse a cache path without a key, or a key without a path", async () => {
+  for (const file of [PREVIEW, BRANCH_PREVIEW]) {
+    assert.deepEqual(await cacheCases(read(file)), [true, true, false, false], file);
+  }
+  // positive control: the same check without its braces groups as ((a && b) || c) && d, and
+  // lets a path with no key through
+  const unbraced = read(PREVIEW).replace(/\{ (\[ -n "\$CACHE_PATH" \] && \[ -z "\$CACHE_KEY" \]); \} \|\| \{ (\[ -z "\$CACHE_PATH" \] && \[ -n "\$CACHE_KEY" \]); \}/, "$1 || $2");
+  assert.notEqual(unbraced, read(PREVIEW));
+  assert.deepEqual(await cacheCases(unbraced), [false, true, false, false]);
+});
+
+test("both previews restore the cache only when asked, after the checkout and before the build", () => {
+  for (const [file, checkout] of [[PREVIEW, "ref: ${{ github.event.pull_request.head.sha }}"], [BRANCH_PREVIEW, "ref: ${{ github.sha }}"]]) {
+    const p = read(file);
+    const at = (s) => { const i = p.indexOf(s); assert.ok(i >= 0, `${file}: ${s}`); return i; };
+    const order = [at(checkout), at("- if: inputs.cache-path != ''"), at("uses: actions/cache@"), at("- name: Build")];
+    assert.deepEqual([...order].sort((x, y) => x - y), order, `${file}: checkout, cache, build`);
+    assert.match(p, /cache-path:\n(.*\n)*?        default: ''/, `${file}: cache-path defaults to none`);
   }
 });
 
