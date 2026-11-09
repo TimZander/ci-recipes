@@ -61,6 +61,8 @@ const PREVIEW_RULES = [
   ["checks out ci-recipes at its own commit", "ref: ${{ job.workflow_sha }}", ["jobs", "preview", "steps", "with"]],
   ["setup-node caches what the caller says", "cache: ${{ inputs.node-cache }}", ["jobs", "preview", "steps", "with"]],
   ["restores the caller's cache under its key", "key: ${{ inputs.cache-key }}", ["jobs", "preview", "steps", "with"]],
+  ["sets up uv and Python only when asked", "- if: inputs.python-version != ''", ["jobs", "preview", "steps"]],
+  ["sets up the Python the caller says", "python-version: ${{ inputs.python-version }}", ["jobs", "preview", "steps", "with"]],
   ["runs the pinned commit's action", "- uses: ./.ci-recipes/actions/pages-preview", ["jobs", "preview", "steps"]],
 ];
 const TEARDOWN_RULES = [
@@ -83,6 +85,8 @@ const BRANCH_PREVIEW_RULES = [
   ["reads the repository, writes nothing", "contents: read", ["jobs", "preview", "permissions"]],
   ["builds the pushed commit", "ref: ${{ github.sha }}", ["jobs", "preview", "steps", "with"]],
   ["restores the caller's cache under its key", "key: ${{ inputs.cache-key }}", ["jobs", "preview", "steps", "with"]],
+  ["sets up uv and Python only when asked", "- if: inputs.python-version != ''", ["jobs", "preview", "steps"]],
+  ["sets up the Python the caller says", "python-version: ${{ inputs.python-version }}", ["jobs", "preview", "steps", "with"]],
   ["checks out ci-recipes at its own commit", "ref: ${{ job.workflow_sha }}", ["jobs", "preview", "steps", "with"]],
   ["runs the pinned commit's action", "- uses: ./.ci-recipes/actions/pages-branch-preview", ["jobs", "preview", "steps"]],
 ];
@@ -388,4 +392,22 @@ test("the teardown template has no path filter: a close always tears down", () =
   // positive controls: a block key and the flow form
   assert.match("    paths-ignore:", FILTER);
   assert.match("  pull_request: {types: [closed], paths-ignore: ['docs/**']}", FILTER);
+});
+
+/** Whether uv and Python are set up before the build that needs them. */
+export function uvBeforeBuild(text) {
+  const uv = text.indexOf("uses: astral-sh/setup-uv@"), build = text.indexOf("- name: Build");
+  return uv >= 0 && build >= 0 && uv < build;
+}
+
+test("both preview workflows set up uv before the build", () => {
+  for (const p of [PREVIEW, BRANCH_PREVIEW]) assert.ok(uvBeforeBuild(read(p)), p);
+});
+
+test("uvBeforeBuild refuses setup-uv after the build, or none", () => {
+  const text = read(PREVIEW);
+  const step = text.slice(text.indexOf("      - if: inputs.python-version != ''"), text.indexOf("      # The caller's downloads"));
+  const moved = text.replace(step, "").replace("      # PINNED-CHECKOUT:", step + "      # PINNED-CHECKOUT:");
+  assert.equal(uvBeforeBuild(moved), false);
+  assert.equal(uvBeforeBuild(text.replace(step, "")), false);
 });

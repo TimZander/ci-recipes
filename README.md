@@ -43,6 +43,10 @@ the build and saves them after it (decision 0009). A pull request restores the d
 cache, so save the same paths under the same key on the default branch, in the production
 deploy, for every pull request to hit it.
 
+A Python build sets `python-version` (with `node-version` empty, or both): the preview runs
+`astral-sh/setup-uv` with that Python before the build, so `build-command` can be
+`uv run python -m mysite build dist` (decision 0010).
+
 `templates/` has the three callers in full. The actions under `actions/` still work as steps on
 their own, but a caller that uses them directly takes on the concurrency and guards itself.
 Everything runs on the runner's own Node.js, with nothing to install. The caller needs the repository secrets `CLOUDFLARE_API_TOKEN` (Pages: Edit) and
