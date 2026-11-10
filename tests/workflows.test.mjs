@@ -411,3 +411,68 @@ test("uvBeforeBuild refuses setup-uv after the build, or none", () => {
   assert.equal(uvBeforeBuild(moved), false);
   assert.equal(uvBeforeBuild(text.replace(step, "")), false);
 });
+
+/** What is wrong with an action.yml's verify step (decision 0011): it must run after the
+ *  deploy and before the step that announces the preview, read the deploy's id, pass
+ *  verify.mjs's exit code through, and carry the same condition as the announcement. */
+function verifyStepProblems(text, announce, cond) {
+  const steps = keyPaths(text).filter((l) => l.path.join(" > ").startsWith("runs > steps"));
+  const at = (pred) => steps.findIndex(pred);
+  const deploy = at((l) => l.line === "- id: deploy" && l.path.join(" > ") === "runs > steps");
+  const verify = at((l) => l.line === "- id: verify" && l.path.join(" > ") === "runs > steps");
+  const run = at((l) => l.line.startsWith("run:") && l.line.includes("verify.mjs"));
+  const said = at((l) => l.line.startsWith("run:") && l.line.includes(announce));
+  const problems = [];
+  if (verify < 0 || run < 0) return ["no verify step"];
+  if (deploy < 0 || said < 0) return ["no deploy or announce step"];
+  if (!(deploy < verify && run < said)) problems.push("verify not between deploy and announce");
+  if (!/^run: node "\$GITHUB_ACTION_PATH\/(\.\.\/pages-preview\/)?verify\.mjs"$/.test(steps[run].line)) problems.push("run line changed");
+  const block = steps.slice(verify, run + 1).map((l) => l.line);
+  if (!block.includes("DEPLOYMENT_ID: ${{ steps.deploy.outputs.pages-deployment-id }}")) problems.push("no deployment id");
+  const ifs = block.filter((l) => /^(- )?if:/.test(l));
+  if (cond ? ifs.length !== 1 || ifs[0] !== `if: ${cond}` : ifs.length !== 0) problems.push("condition changed");
+  if (QUIET.test(text)) problems.push("continue-on-error");
+  return problems;
+}
+
+const VERIFIED = [
+  ["actions/pages-preview/action.yml", "comment.mjs", "steps.guard.outputs.skipped == 'false'"],
+  ["actions/pages-branch-preview/action.yml", "summary.mjs", null],
+];
+
+test("both previews announce a deployment only after Cloudflare reports it live", () => {
+  for (const [file, announce, cond] of VERIFIED) {
+    assert.deepEqual(verifyStepProblems(read(file), announce, cond), [], file);
+  }
+});
+
+test("positive control: each way of skipping the verify step is reported", () => {
+  for (const [file, announce, cond] of VERIFIED) {
+    const a = read(file);
+    const runLine = a.split("\n").find((l) => l.includes("verify.mjs")).trim();
+    const idLine = "DEPLOYMENT_ID: ${{ steps.deploy.outputs.pages-deployment-id }}";
+    const verifyStep = a.slice(a.indexOf("    - id: verify"), a.indexOf(runLine) + runLine.length);
+    const cases = {
+      "no verify step": a.replace(verifyStep, ""),
+      "run line changed": a.replace(runLine, runLine + " || true"),
+      "no deployment id": a.replace(idLine, "DEPLOYMENT_ID: ''"),
+      "condition changed": cond ? a.replace(`if: ${cond}\n      shell: bash\n      env:\n        CLOUDFLARE_API_TOKEN`, "if: always()\n      shell: bash\n      env:\n        CLOUDFLARE_API_TOKEN")
+        : a.replace("    - id: verify\n", "    - id: verify\n      if: always()\n"),
+      "continue-on-error": a.replace("    - id: verify\n", "    - id: verify\n      continue-on-error: true\n"),
+      "verify not between deploy and announce": a.replace(verifyStep + "\n", "").replace(/(\n.*run: node "\$GITHUB_ACTION_PATH\/(comment|summary)\.mjs")/, `$1\n\n${verifyStep}`),
+    };
+    for (const [problem, text] of Object.entries(cases)) {
+      assert.notEqual(text, a, `${file}: fixture for "${problem}" still matches`);
+      assert.ok(verifyStepProblems(text, announce, cond).includes(problem), `${file}: ${problem}`);
+    }
+  }
+});
+
+test("a failed verify replaces the comment with the unconfirmed one", () => {
+  const a = read("actions/pages-preview/action.yml");
+  const cond = "- if: failure() && steps.guard.outputs.skipped == 'false' && steps.verify.outcome == 'failure'";
+  const i = a.indexOf(cond);
+  assert.ok(i > a.indexOf("    - id: verify"), "the unconfirmed step follows verify");
+  const step = a.slice(i, a.indexOf('run: node "$GITHUB_ACTION_PATH/comment.mjs"', i));
+  assert.match(step, /STATUS: unconfirmed/);
+});

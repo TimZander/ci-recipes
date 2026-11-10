@@ -38,7 +38,7 @@ outputs:
     value: ${{ steps.deploy.outputs.deployment-url }}
   alias-url:
     description: The pr-<number> alias, stable across pushes.
-    value: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+    value: ${{ steps.verify.outputs.alias-url || steps.deploy.outputs.pages-deployment-alias-url }}
   skipped:
     description: '"true" when the run was a fork pull request and nothing was deployed.'
     value: ${{ steps.guard.outputs.skipped }}
@@ -83,6 +83,18 @@ runs:
         packageManager: npm
         command: pages deploy ${{ inputs.directory }} --project-name=${{ inputs.project-name }} --branch=pr-${{ github.event.pull_request.number }}
 
+    # wrangler exits 0 when it couldn't learn the deployment's status, so its exit code
+    # never announces a preview: Cloudflare's own answer does (decision 0011).
+    - id: verify
+      if: steps.guard.outputs.skipped == 'false'
+      shell: bash
+      env:
+        CLOUDFLARE_API_TOKEN: ${{ inputs.api-token }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.account-id }}
+        PROJECT_NAME: ${{ inputs.project-name }}
+        DEPLOYMENT_ID: ${{ steps.deploy.outputs.pages-deployment-id }}
+      run: node "$GITHUB_ACTION_PATH/verify.mjs"
+
     - if: steps.guard.outputs.skipped == 'false'
       shell: bash
       env:
@@ -90,6 +102,17 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
-        ALIAS_URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+        ALIAS_URL: ${{ steps.verify.outputs.alias-url || steps.deploy.outputs.pages-deployment-alias-url }}
         NOTE: ${{ inputs.note }}
+      run: node "$GITHUB_ACTION_PATH/comment.mjs"
+
+    # A deployment that wasn't confirmed live replaces an earlier push's "Preview ready", so the
+    # pull request never shows a ready preview for a commit that has none (decision 0011).
+    - if: failure() && steps.guard.outputs.skipped == 'false' && steps.verify.outcome == 'failure'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        STATUS: unconfirmed
       run: node "$GITHUB_ACTION_PATH/comment.mjs"

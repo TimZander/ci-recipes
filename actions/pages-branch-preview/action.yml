@@ -40,7 +40,7 @@ outputs:
     value: ${{ steps.deploy.outputs.deployment-url }}
   alias-url:
     description: The pv-<hash> alias, stable across pushes.
-    value: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+    value: ${{ steps.verify.outputs.alias-url || steps.deploy.outputs.pages-deployment-alias-url }}
 
 runs:
   using: composite
@@ -77,10 +77,21 @@ runs:
         packageManager: npm
         command: pages deploy ${{ inputs.directory }} --project-name=${{ inputs.project-name }} --branch=${{ inputs.alias }}
 
+    # wrangler exits 0 when it couldn't learn the deployment's status, so its exit code
+    # never announces a preview: Cloudflare's own answer does (decision 0011).
+    - id: verify
+      shell: bash
+      env:
+        CLOUDFLARE_API_TOKEN: ${{ inputs.api-token }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.account-id }}
+        PROJECT_NAME: ${{ inputs.project-name }}
+        DEPLOYMENT_ID: ${{ steps.deploy.outputs.pages-deployment-id }}
+      run: node "$GITHUB_ACTION_PATH/../pages-preview/verify.mjs"
+
     - shell: bash
       env:
         DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
-        ALIAS_URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+        ALIAS_URL: ${{ steps.verify.outputs.alias-url || steps.deploy.outputs.pages-deployment-alias-url }}
         BRANCH: ${{ github.ref_name }}
         HEAD_SHA: ${{ github.sha }}
         NOTE: ${{ inputs.note }}

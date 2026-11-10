@@ -75,7 +75,9 @@ export const REMOVED_BODY = `${MARKER}\nPreview removed: this pull request was c
 
 // ---------------------------------------------------------------- I/O below
 
-async function http(url, { method = "GET", token, body } = {}) {
+/** One Cloudflare or GitHub API call: bearer token, 30 s timeout, JSON parsed when it can be.
+ *  Shared with pages-preview's verify.mjs. */
+export async function http(url, { method = "GET", token, body } = {}) {
   const res = await fetch(url, {
     method,
     headers: {

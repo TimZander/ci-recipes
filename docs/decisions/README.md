@@ -15,3 +15,4 @@ an earlier one marks the old one superseded rather than editing it.
 | [0008](0008-a-preview-only-route-on-preview-branches.md) | A preview-only route: a push to `preview/**` deploys a preview, with no pull request | accepted |
 | [0009](0009-previews-cache-a-callers-downloads.md) | Previews can cache a caller's downloads, with `cache-path` and `cache-key` | accepted |
 | [0010](0010-previews-can-set-up-python-with-uv.md) | Previews can set up Python with uv, with `python-version` | accepted |
+| [0011](0011-a-preview-is-announced-only-once-cloudflare-reports-it-live.md) | A preview is announced only once Cloudflare reports it live | accepted |

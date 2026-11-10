@@ -4,7 +4,8 @@
 // this file is executed. Node stdlib only: the action runs it with the runner's own node.
 //
 // Reads: GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL, PR_NUMBER, HEAD_SHA,
-//        DEPLOYMENT_URL, ALIAS_URL, NOTE, GITHUB_STEP_SUMMARY.
+//        DEPLOYMENT_URL, ALIAS_URL, NOTE, GITHUB_STEP_SUMMARY, and STATUS ("unconfirmed" posts
+//        unconfirmedBody instead, after a failed verify).
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -22,6 +23,15 @@ export function previewBody({ deploymentUrl, aliasUrl, sha, note }) {
   lines.push(`This commit: ${deploymentUrl}`);
   if (note && note.trim()) lines.push("", `_${note.trim()}_`);
   return lines.join("\n") + "\n";
+}
+
+/** The comment when this commit's deployment wasn't confirmed live (decision 0011). It
+ *  replaces an earlier push's "Preview ready", which would otherwise still read as current;
+ *  it links nothing, since nothing for this commit is known to load. */
+export function unconfirmedBody({ sha }) {
+  const at = sha ? sha.slice(0, 7) : "this commit";
+  return [MARKER, `**Preview not confirmed** for ${at}: Cloudflare didn't report its deployment live.`,
+    "", "Re-run the preview job; until it passes, no preview link here is for this commit."].join("\n") + "\n";
 }
 
 /** Our own comment only: written by the Actions bot AND starting with the marker. A comment
@@ -61,10 +71,11 @@ async function allComments(repo, pr) {
 
 async function main() {
   const e = process.env;
-  for (const k of ["GITHUB_TOKEN", "GITHUB_REPOSITORY", "PR_NUMBER", "DEPLOYMENT_URL"]) {
+  const unconfirmed = e.STATUS === "unconfirmed";
+  for (const k of ["GITHUB_TOKEN", "GITHUB_REPOSITORY", "PR_NUMBER", ...(unconfirmed ? [] : ["DEPLOYMENT_URL"])]) {
     if (!e[k]) throw new Error(`${k} is empty or unset`);
   }
-  const body = previewBody({
+  const body = unconfirmed ? unconfirmedBody({ sha: e.HEAD_SHA }) : previewBody({
     deploymentUrl: e.DEPLOYMENT_URL, aliasUrl: e.ALIAS_URL, sha: e.HEAD_SHA, note: e.NOTE,
   });
   if (e.GITHUB_STEP_SUMMARY) appendFileSync(e.GITHUB_STEP_SUMMARY, body.replace(MARKER + "\n", ""));
