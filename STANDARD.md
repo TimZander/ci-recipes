@@ -46,6 +46,13 @@ Deploy a preview with `--branch=pr-<number>`, never the head branch name.
 
 ## 3. One preview comment
 
+**A preview is announced only once Cloudflare reports it live** (decision 0011). wrangler 3
+exits 0 when it gave up asking for the deployment's status (about 31 s), with no alias, so its
+exit code says nothing. Before the comment or a branch preview's summary, the action asks
+Cloudflare's API for that deployment, every 5 s for up to 3 minutes: live, and the comment
+goes out (with the alias Cloudflare returns); failed or still unconfirmed, and the job fails
+with no comment. Re-run it rather than trust an unconfirmed link (garmin-map #292).
+
 The comment starts with `<!-- cf-preview-deploy -->` and is updated in place on every push.
 
 - It is found by **author and prefix**: the Actions bot's comment that *starts with* the

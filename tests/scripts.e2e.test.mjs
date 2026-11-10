@@ -71,6 +71,17 @@ function fakeApi(state) {
         return send(200, { success: true, result: state.deployments.slice((page - 1) * 25, page * 25) });
       }
       const d = path.match(new RegExp(`^${cf}/deployments/([^/]+)$`));
+      // A deployment's status: state.stages[id] is the queue of answers, the last one repeated
+      if (req.method === "GET" && d && state.stages?.[d[1]]) {
+        const q = state.stages[d[1]];
+        const next = q.length > 1 ? q.shift() : q[0];
+        if (next.http) return send(next.http, { success: false, errors: [{ message: "busy" }] });
+        return send(200, { success: true, result: { id: d[1], latest_stage: next, aliases: state.aliases ?? [] } });
+      }
+      const logs = path.match(new RegExp(`^${cf}/deployments/([^/]+)/history/logs$`));
+      if (req.method === "GET" && logs) {
+        return send(200, { success: true, result: { total: 2, data: [{ line: "Initializing" }, { line: "Error: Failed to publish your Function" }] } });
+      }
       if (req.method === "DELETE" && d) {
         if (state.failDelete === d[1]) return send(500, { success: false, errors: [{ message: "boom" }] });
         state.deployments = state.deployments.filter((x) => x.id !== d[1]);
@@ -333,5 +344,59 @@ test("teardown sweep: a failed preview-branch listing deletes nothing", async ()
       assert.equal(state.deployments.length, 2, String(failRefs));
       assert.ok(!api.log.some((l) => l.startsWith("DELETE")), String(failRefs));
     } finally { await api.close(); }
+  }
+});
+
+// ---------------------------------------------------------------- verify
+
+const DEP = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+
+async function verify(state, env = {}) {
+  const api = await fakeApi(state);
+  const dir = mkdtempSync(join(tmpdir(), "verify-"));
+  const out = join(dir, "output");
+  writeFileSync(out, "");
+  try {
+    const r = await run("actions/pages-preview/verify.mjs", {
+      CLOUDFLARE_API_TOKEN: "cf", CLOUDFLARE_ACCOUNT_ID: ACCOUNT, PROJECT_NAME: PROJECT,
+      CLOUDFLARE_API_URL: api.base, DEPLOYMENT_ID: DEP, GITHUB_OUTPUT: out,
+      VERIFY_TIMEOUT_SECONDS: "2", VERIFY_INTERVAL_MS: "50", ...env,
+    });
+    return { ...r, output: readFileSync(out, "utf8"), log: api.log };
+  } finally {
+    await api.close();
+  }
+}
+
+test("verify: waits through pending answers and passes once the deploy stage succeeds", async () => {
+  const r = await verify({
+    stages: { [DEP]: [{ http: 503 }, { name: "deploy", status: "active" }, { name: "deploy", status: "success" }] },
+    aliases: ["https://pr-7.proj.pages.dev"],
+  });
+  assert.equal(r.code, 0, r.stdout + r.stderr);
+  assert.equal(r.output, "alias-url=https://pr-7.proj.pages.dev\n");
+  assert.equal(r.log.filter((l) => l === `GET /accounts/${ACCOUNT}/pages/projects/${PROJECT}/deployments/${DEP}`).length, 3);
+});
+
+test("verify: a failed deployment exits non-zero with Cloudflare's last log line", async () => {
+  const r = await verify({ stages: { [DEP]: [{ name: "deploy", status: "failure" }] } });
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /::error::.*failed \(stage deploy: failure\): Error: Failed to publish your Function/);
+  assert.equal(r.output, "", "no alias for a deployment that isn't live");
+});
+
+test("verify: a deployment that never goes live fails the job once the timeout passes", async () => {
+  const r = await verify({ stages: { [DEP]: [{ name: "deploy", status: "active" }] } }, { VERIFY_TIMEOUT_SECONDS: "1" });
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /::error::.*didn't report deployment .* live within 1 s \(last: stage deploy: active\)/);
+  assert.equal(r.output, "");
+});
+
+test("verify: no deployment id, or one that isn't Cloudflare's, is refused before any request", async () => {
+  for (const DEPLOYMENT_ID of ["", "../../evil"]) {
+    const r = await verify({ stages: {} }, { DEPLOYMENT_ID });
+    assert.equal(r.code, 1, DEPLOYMENT_ID);
+    assert.match(r.stdout, /no deployment id/);
+    assert.deepEqual(r.log, []);
   }
 });
