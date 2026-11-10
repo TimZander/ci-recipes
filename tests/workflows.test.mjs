@@ -467,3 +467,12 @@ test("positive control: each way of skipping the verify step is reported", () =>
     }
   }
 });
+
+test("a failed verify replaces the comment with the unconfirmed one", () => {
+  const a = read("actions/pages-preview/action.yml");
+  const cond = "- if: failure() && steps.guard.outputs.skipped == 'false' && steps.verify.outcome == 'failure'";
+  const i = a.indexOf(cond);
+  assert.ok(i > a.indexOf("    - id: verify"), "the unconfirmed step follows verify");
+  const step = a.slice(i, a.indexOf('run: node "$GITHUB_ACTION_PATH/comment.mjs"', i));
+  assert.match(step, /STATUS: unconfirmed/);
+});

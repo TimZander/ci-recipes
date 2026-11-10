@@ -39,9 +39,17 @@ work"), because it is the authoritative answer and gives the reason when a deplo
   every 5 s for up to 180 s.
 - **Live** means the `deploy` stage reports `success`. Its `*.pages.dev` alias is passed to the
   comment, filling the stable link when wrangler returned none.
-- **Failed** (any stage `failure` or `canceled`): the job fails with Cloudflare's last log line.
+- **Failed** (any stage `failure`, `canceled` or `skipped`): the job fails with Cloudflare's
+  last log line, escaped so it can't start a workflow command.
 - **No confirmation in 180 s**, a missing deployment id, or one that doesn't look like
-  Cloudflare's: the job fails. No comment is posted, and the error says to re-run.
+  Cloudflare's: the job fails, and the error says to re-run.
+- On a pull request, a failed verify replaces the comment with **Preview not confirmed** for
+  that commit, with no link. Otherwise an earlier push's "Preview ready" would still read as
+  current.
+- The step runs after the caller's build, which can write to `$GITHUB_ENV`. So verify reads
+  no setting from the environment beyond the token, account, project and id the step passes:
+  the API URL and timings used by tests come only as command-line arguments. An environment
+  variable could send the token to another host.
 - It is a step, not a job: no extra billed minute. It usually costs a few seconds, since
   wrangler has already waited.
 - No input or output changed, so callers move to it by moving their pin.

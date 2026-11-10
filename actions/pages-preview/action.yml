@@ -105,3 +105,14 @@ runs:
         ALIAS_URL: ${{ steps.verify.outputs.alias-url || steps.deploy.outputs.pages-deployment-alias-url }}
         NOTE: ${{ inputs.note }}
       run: node "$GITHUB_ACTION_PATH/comment.mjs"
+
+    # A deployment that wasn't confirmed live replaces an earlier push's "Preview ready", so the
+    # pull request never shows a ready preview for a commit that has none (decision 0011).
+    - if: failure() && steps.guard.outputs.skipped == 'false' && steps.verify.outcome == 'failure'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        STATUS: unconfirmed
+      run: node "$GITHUB_ACTION_PATH/comment.mjs"

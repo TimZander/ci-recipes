@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { previewBody, findOwnComment, MARKER, BOT } from "../actions/pages-preview/comment.mjs";
+import { previewBody, unconfirmedBody, findOwnComment, MARKER, BOT } from "../actions/pages-preview/comment.mjs";
 
 const URL1 = "https://abc123.proj.pages.dev";
 const ALIAS = "https://pr-7.proj.pages.dev";
@@ -41,4 +41,11 @@ test("findOwnComment matches only the bot's comment that starts with the marker"
   assert.equal(findOwnComment([quoted, botQuoting, otherBot, ours])?.id, 3);
   assert.equal(findOwnComment([quoted, botQuoting, otherBot]), undefined);
   assert.equal(findOwnComment([{ id: 5, user: null, body: null }]), undefined);
+});
+
+test("the unconfirmed body starts with the marker, names the commit and links nothing", () => {
+  const b = unconfirmedBody({ sha: "0123456789abcdef" });
+  assert.ok(b.startsWith(MARKER + "\n"));
+  assert.match(b, /Preview not confirmed\*\* for 0123456:/);
+  assert.doesNotMatch(b, /https?:\/\//);
 });

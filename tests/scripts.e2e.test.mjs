@@ -80,7 +80,8 @@ function fakeApi(state) {
       }
       const logs = path.match(new RegExp(`^${cf}/deployments/([^/]+)/history/logs$`));
       if (req.method === "GET" && logs) {
-        return send(200, { success: true, result: { total: 2, data: [{ line: "Initializing" }, { line: "Error: Failed to publish your Function" }] } });
+        const line = state.evilLog ? "boom\n::stop-commands::x" : "Error: Failed to publish your Function";
+        return send(200, { success: true, result: { total: 2, data: [{ line: "Initializing" }, { line }] } });
       }
       if (req.method === "DELETE" && d) {
         if (state.failDelete === d[1]) return send(500, { success: false, errors: [{ message: "boom" }] });
@@ -96,9 +97,9 @@ function fakeApi(state) {
   }));
 }
 
-function run(script, env) {
+function run(script, env, args = []) {
   return new Promise((resolve) => {
-    execFile(process.execPath, [script], { cwd: root, env: { PATH: process.env.PATH, ...env } },
+    execFile(process.execPath, [script, ...args], { cwd: root, env: { PATH: process.env.PATH, ...env } },
       (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr }));
   });
 }
@@ -351,17 +352,17 @@ test("teardown sweep: a failed preview-branch listing deletes nothing", async ()
 
 const DEP = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
 
-async function verify(state, env = {}) {
+async function verify(state, env = {}, args = {}) {
   const api = await fakeApi(state);
   const dir = mkdtempSync(join(tmpdir(), "verify-"));
   const out = join(dir, "output");
   writeFileSync(out, "");
   try {
+    const flags = { "api-url": api.base, "timeout-seconds": "2", "interval-ms": "50", ...args };
     const r = await run("actions/pages-preview/verify.mjs", {
       CLOUDFLARE_API_TOKEN: "cf", CLOUDFLARE_ACCOUNT_ID: ACCOUNT, PROJECT_NAME: PROJECT,
-      CLOUDFLARE_API_URL: api.base, DEPLOYMENT_ID: DEP, GITHUB_OUTPUT: out,
-      VERIFY_TIMEOUT_SECONDS: "2", VERIFY_INTERVAL_MS: "50", ...env,
-    });
+      DEPLOYMENT_ID: DEP, GITHUB_OUTPUT: out, ...env,
+    }, Object.entries(flags).map(([k, v]) => `--${k}=${v}`));
     return { ...r, output: readFileSync(out, "utf8"), log: api.log };
   } finally {
     await api.close();
@@ -386,7 +387,7 @@ test("verify: a failed deployment exits non-zero with Cloudflare's last log line
 });
 
 test("verify: a deployment that never goes live fails the job once the timeout passes", async () => {
-  const r = await verify({ stages: { [DEP]: [{ name: "deploy", status: "active" }] } }, { VERIFY_TIMEOUT_SECONDS: "1" });
+  const r = await verify({ stages: { [DEP]: [{ name: "deploy", status: "active" }] } }, {}, { "timeout-seconds": "1" });
   assert.equal(r.code, 1);
   assert.match(r.stdout, /::error::.*didn't report deployment .* live within 1 s \(last: stage deploy: active\)/);
   assert.equal(r.output, "");
@@ -398,5 +399,41 @@ test("verify: no deployment id, or one that isn't Cloudflare's, is refused befor
     assert.equal(r.code, 1, DEPLOYMENT_ID);
     assert.match(r.stdout, /no deployment id/);
     assert.deepEqual(r.log, []);
+  }
+});
+
+test("verify: the API URL comes from an argument only; one in the environment is ignored", async () => {
+  // The fake API answers live, but only an argument may send the request there: with the
+  // environment variable alone, verify must not use it (decision 0011).
+  const api = await fakeApi({ stages: { [DEP]: [{ name: "deploy", status: "success" }] } });
+  try {
+    const r = await run("actions/pages-preview/verify.mjs", {
+      CLOUDFLARE_API_TOKEN: "cf", CLOUDFLARE_ACCOUNT_ID: ACCOUNT, PROJECT_NAME: PROJECT, DEPLOYMENT_ID: DEP,
+      CLOUDFLARE_API_URL: api.base,
+    }, ["--timeout-seconds=1", "--interval-ms=50", "--api-url=http://127.0.0.1:1"]);
+    assert.equal(r.code, 1);
+    assert.deepEqual(api.log, [], "the token never went to the environment's URL");
+  } finally {
+    await api.close();
+  }
+});
+
+test("verify: a log line holding a newline can't start a workflow command", async () => {
+  const r = await verify({ stages: { [DEP]: [{ name: "deploy", status: "failure" }] }, evilLog: true });
+  assert.equal(r.code, 1);
+  for (const line of r.stdout.split("\n")) assert.ok(!line.startsWith("::stop-commands::"), line);
+  assert.match(r.stdout, /%0A::stop-commands::/);
+});
+
+test("comment: STATUS=unconfirmed replaces a ready comment with one that links nothing", async () => {
+  const state = { comments: [{ id: 5, user: { login: BOT }, body: MARKER + "\n**Preview ready** for 1111111." }] };
+  const api = await fakeApi(state);
+  try {
+    const r = await comment({ GITHUB_API_URL: api.base, STATUS: "unconfirmed", DEPLOYMENT_URL: "", ALIAS_URL: "" });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(state.comments[0].body, /^<!-- cf-preview-deploy -->\n\*\*Preview not confirmed\*\* for abcdef0/);
+    assert.doesNotMatch(state.comments[0].body, /https?:\/\//);
+  } finally {
+    await api.close();
   }
 });
